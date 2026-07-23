@@ -38,6 +38,7 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize
+from pathlib import Path
 
 from QuadSim.models.quad_sim import ControlAllocator, CascadedPIDController
 from QuadSim.models.quad_sim_10dof import QuadcopterPlant10DOF, Simulation10DOF
@@ -317,12 +318,16 @@ def main():
           f"ovs {before2['overshoot_pct']:.1f}->{after2['overshoot_pct']:.1f}% | "
           f"cost {before2['cost']:.3f}->{after2['cost']:.3f}")
 
-    with open('tuned_gains.json', 'w') as f:
+    data_dir = Path('results/tuning_data')
+    data_dir.mkdir(parents=True, exist_ok=True)
+    json_file = data_dir / 'tuned_gains.json'
+
+    with open(json_file, 'w') as f:
         json.dump({'defaults': DEFAULTS, 'tuned': g2,
                    'stage1_metrics': {'before': before1, 'after': after1},
                    'stage2_metrics': {'before': before2, 'after': after2}},
-                  f, indent=2, default=float)
-    print("\nSaved tuned_gains.json")
+                  f, indent=2, default=float) #[cite: 2]
+    print(f"\nSaved {json_file}")
 
     # ------------------ before/after figure -----------------------------
     fig, axes = plt.subplots(1, 2, figsize=(13, 4.6))
@@ -349,8 +354,12 @@ def main():
     fig.suptitle('PID tuning on the 10-DOF model: before vs after',
                  fontweight='bold')
     fig.tight_layout()
-    fig.savefig('tuning_comparison.png', dpi=120, bbox_inches='tight')
-    print("Saved tuning_comparison.png")
+    fig_dir = Path('results/figures/10dof')
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    fig_file = fig_dir / 'tuning_comparison.png'
+    
+    fig.savefig(fig_file, dpi=120, bbox_inches='tight')
+    print(f"Saved {fig_file}")
 
 
 if __name__ == '__main__':
