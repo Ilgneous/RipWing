@@ -38,10 +38,10 @@ Run with:  pytest test_physics_10dof.py -v
 import numpy as np
 import pytest
 
-from quad_sim import (
+from QuadSim.models.quad_sim import (
     QuadcopterPlant, ControlAllocator, CascadedPIDController, Simulation,
 )
-from quad_sim_10dof import QuadcopterPlant10DOF, Simulation10DOF
+from QuadSim.models.quad_sim_10dof import QuadcopterPlant10DOF, Simulation10DOF
 
 
 @pytest.fixture
@@ -325,7 +325,7 @@ class TestClosedLoopAndImprovement:
         assert abs(f[2] - 2.0) < 0.2 and abs(f[0]) < 0.1 and abs(f[1]) < 0.1
 
     def test_step_maneuver_no_divergence(self):
-        from quad_sim_10dof import step_maneuver
+        from QuadSim.models.quad_sim_10dof import step_maneuver
         sim = self._run10(step_maneuver, duration=12.0)
         S = sim.state_hist
         assert np.all(np.isfinite(S))

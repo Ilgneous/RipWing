@@ -22,7 +22,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 
-from quad_sim import (
+from QuadSim.models.quad_sim import (
     QuadcopterPlant, ControlAllocator, CascadedPIDController, Simulation,
 )
 

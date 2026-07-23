@@ -24,9 +24,9 @@ Output: model_comparison.png + printed quantitative metrics.
 import numpy as np
 import matplotlib.pyplot as plt
 
-from quad_sim import (QuadcopterPlant, ControlAllocator,
+from QuadSim.models.quad_sim import (QuadcopterPlant, ControlAllocator,
                       CascadedPIDController, Simulation)
-from quad_sim_10dof import QuadcopterPlant10DOF, Simulation10DOF
+from QuadSim.models.quad_sim_10dof import QuadcopterPlant10DOF, Simulation10DOF
 
 
 def make(plant_cls, hot_rate_gain=1.0):

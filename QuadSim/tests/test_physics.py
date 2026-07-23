@@ -36,7 +36,7 @@ Run with:  pytest test_physics.py -v
 import numpy as np
 import pytest
 
-from quad_sim import (
+from QuadSim.models.quad_sim import (
     QuadcopterPlant,
     ControlAllocator,
     CascadedPIDController,
@@ -362,7 +362,7 @@ class TestClosedLoop:
         Over the full maneuver, no state may blow up. NaNs or huge values mean
         the loop went unstable.
         """
-        from quad_sim import step_maneuver
+        from QuadSim.models.quad_sim import step_maneuver
         sim = self._run(step_maneuver)
         S = sim.state_hist
         assert np.all(np.isfinite(S)), "states must remain finite"
@@ -374,7 +374,7 @@ class TestClosedLoop:
         For a gentle maneuver, motor speeds must never exceed the actuator
         limit. If they do, the demo gains/commands are too aggressive.
         """
-        from quad_sim import step_maneuver
+        from QuadSim.models.quad_sim import step_maneuver
         sim = self._run(step_maneuver)
         assert np.all(sim.omega_hist <= plant_max_omega()), \
             "motors should not saturate on a gentle maneuver"
@@ -385,7 +385,7 @@ class TestClosedLoop:
         tilting — that's the underactuated nature of a quadcopter). Verify a
         nonzero pitch excursion occurs during an x-step.
         """
-        from quad_sim import step_maneuver
+        from QuadSim.models.quad_sim import step_maneuver
         sim = self._run(step_maneuver)
         S = sim.state_hist
         max_pitch = np.abs(S[:, 7]).max()

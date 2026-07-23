@@ -15,8 +15,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from quad_sim import ControlAllocator, CascadedPIDController
-from quad_sim_10dof import QuadcopterPlant10DOF, Simulation10DOF
+from QuadSim.models.quad_sim import ControlAllocator, CascadedPIDController
+from QuadSim.models.quad_sim_10dof import QuadcopterPlant10DOF, Simulation10DOF
 
 
 def descend_to_ground(t):

@@ -39,8 +39,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize
 
-from quad_sim import ControlAllocator, CascadedPIDController
-from quad_sim_10dof import QuadcopterPlant10DOF, Simulation10DOF
+from QuadSim.models.quad_sim import ControlAllocator, CascadedPIDController
+from QuadSim.models.quad_sim_10dof import QuadcopterPlant10DOF, Simulation10DOF
 
 
 # ---------------------------------------------------------------------------

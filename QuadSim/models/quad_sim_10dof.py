@@ -72,7 +72,7 @@ trusting absolute gain numbers.
 
 import numpy as np
 
-from quad_sim import (
+from QuadSim.models.quad_sim import (
     QuadcopterPlant,
     ControlAllocator,
     CascadedPIDController,
