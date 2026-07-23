@@ -370,17 +370,29 @@ class ControlAllocator:
 class PID:
     """Minimal scalar PID with output clamping and integral anti-windup."""
 
-    def __init__(self, kp, ki, kd, out_limit=None, integ_limit=None):
+    def __init__(self, kp, ki, kd, out_limit=None, integ_limit=None,
+                 d_lpf_hz=None):
+        """
+        d_lpf_hz : optional first-order low-pass cutoff [Hz] applied to the
+                   derivative term. Real flight controllers always filter the
+                   D-term (e.g. Betaflight's D-term lowpass) because
+                   differentiating a noisy measurement amplifies noise by
+                   ~sqrt(2)/dt. None (default) disables the filter, preserving
+                   the original behavior.
+        """
         self.kp, self.ki, self.kd = kp, ki, kd
         self.out_limit = out_limit
         self.integ_limit = integ_limit
+        self.d_lpf_hz = d_lpf_hz
         self.integ = 0.0
         self.prev_error = 0.0
+        self._d_filt = 0.0
         self._initialized = False
 
     def reset(self):
         self.integ = 0.0
         self.prev_error = 0.0
+        self._d_filt = 0.0
         self._initialized = False
 
     def update(self, error, dt, derivative=None):
@@ -398,6 +410,12 @@ class PID:
             else:
                 derivative = (error - self.prev_error) / dt
         self.prev_error = error
+
+        # Optional first-order low-pass on the derivative term.
+        if self.d_lpf_hz is not None:
+            alpha = dt / (dt + 1.0 / (2.0 * np.pi * self.d_lpf_hz))
+            self._d_filt += alpha * (derivative - self._d_filt)
+            derivative = self._d_filt
 
         out = self.kp * error + self.ki * self.integ + self.kd * derivative
         if self.out_limit is not None:
@@ -487,6 +505,13 @@ class CascadedPIDController:
 
         theta_des =  np.clip(ax_body / self.plant.g, -self.max_tilt, self.max_tilt)  # pitch -> +x
         phi_des   = np.clip(-ay_body / self.plant.g, -self.max_tilt, self.max_tilt)  # roll  -> +y
+
+        # Optional direct attitude override (used by tuning & diagnostic
+        # scenarios to exercise the inner loop without the position loop).
+        if 'phi' in setpoint:
+            phi_des = setpoint['phi']
+        if 'theta' in setpoint:
+            theta_des = setpoint['theta']
 
         # ---------------- INNER LOOP: attitude -> rate -> torque -----------
         # Wrap yaw error into [-pi, pi].
