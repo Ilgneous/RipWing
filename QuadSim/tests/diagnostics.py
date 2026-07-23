@@ -21,6 +21,7 @@ Outputs a single multi-page figure: diagnostics.png
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
+from pathlib import Path
 
 from QuadSim.models.quad_sim import (
     QuadcopterPlant, ControlAllocator, CascadedPIDController, Simulation,
@@ -145,8 +146,12 @@ def main():
 
     fig.suptitle("Quadcopter Physics Diagnostics — each row has a KNOWN expected signature",
                  fontsize=14, fontweight='bold', y=0.995)
-    fig.savefig('diagnostics.png', dpi=110, bbox_inches='tight')
-    print("Saved diagnostics.png")
+    diag_dir = Path('results/figures/comparisons')
+    diag_dir.mkdir(parents=True, exist_ok=True)
+    diag_file = diag_dir / 'diagnostics.png'
+    
+    fig.savefig(diag_file, dpi=110, bbox_inches='tight')
+    print(f"Saved {diag_file}")
 
     # Print quantitative checks alongside the visuals.
     print("\n--- Quantitative signatures ---")
