@@ -23,6 +23,7 @@ Output: model_comparison.png + printed quantitative metrics.
 
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 from QuadSim.models.quad_sim import (QuadcopterPlant, ControlAllocator,
                       CascadedPIDController, Simulation)
@@ -138,7 +139,12 @@ def main():
     fig.suptitle('What the 10-DOF model captures that 6-DoF cannot',
                  fontsize=14, fontweight='bold')
     fig.savefig('model_comparison.png', dpi=120, bbox_inches='tight')
-    print("Saved model_comparison.png\n")
+    out_dir = Path('results/figures/comparisons')
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    out_file = out_dir / 'model_comparison.png'
+    fig.savefig(out_file, dpi=120, bbox_inches='tight')
+    print(f"Saved {out_file}\n")
 
     # ---------------- quantitative summary ------------------------------
     print("--- Quantitative comparison ---")
