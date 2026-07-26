@@ -1,0 +1,15 @@
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+# Change the chip string to your exact part.
+# Run `probe-rs chip list | grep STM32` to find it.
+runner = "probe-rs run --chip STM32F411CEUx"
+rustflags = [
+  "-C", "link-arg=-Tlink.x",
+  "-C", "link-arg=-Tdefmt.x",
+  "-C", "linker=flip-link",
+]
+
+[env]
+DEFMT_LOG = "info"

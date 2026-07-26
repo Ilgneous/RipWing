@@ -1,0 +1,16 @@
+# Rust build output
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Python tooling (tools/)
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/

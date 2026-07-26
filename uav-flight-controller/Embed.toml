@@ -1,0 +1,10 @@
+# Optional probe-rs configuration. `cargo run` uses the runner in
+# .cargo/config.toml; this file is for `cargo embed` if you prefer it.
+[default.general]
+chip = "STM32F411CEUx"
+
+[default.rtt]
+enabled = true
+
+[default.gdb]
+enabled = false
