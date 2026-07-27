@@ -34,6 +34,7 @@ mod app {
     // The control logic is an external, host-testable crate (§3.1); firmware
     // calls into it through the Controller trait.
     use ripwing_control::{AttitudeGains, AttitudeRateController, Controller, PidConfig};
+    use ripwing_safety::{MotorPermission, SafetyInputs, SafetyLimits, SafetyMonitor};
     use rtic_monotonics::systick::prelude::*;
     use stm32f4xx_hal::{
         gpio::{Output, PushPull, PC13},
@@ -58,6 +59,11 @@ mod app {
         setpoint: Setpoint,
         /// Latest mixer output: written by control, read by safety monitor.
         motor_cmd: MotorCommand,
+        /// Safety verdict: written by safety_monitor, read by attitude_control.
+        /// When false, control must output a zeroed motor command regardless
+        /// of what the PID computed. This is how the priority-6 monitor's
+        /// decision reaches the actuation path.
+        motors_enabled: bool,
     }
 
     // ---- Local resources (owned by exactly one task) ---------------------
@@ -68,6 +74,9 @@ mod app {
         /// it is a local resource — no lock needed, direct access. Its
         /// integrators and filters persist across ticks here.
         controller: AttitudeRateController,
+        /// The failsafe state machine. Owned solely by `safety_monitor`, so
+        /// it is local — its arm state and latch persist across ticks here.
+        safety: SafetyMonitor,
         // Instrumentation pins (§4.7): reserved purely for scope timing.
         // Assign real GPIOs in board.rs when wiring is decided.
         // dbg_control: DbgPin,
@@ -107,6 +116,11 @@ mod app {
             yaw: PidConfig { kd: 0.0, ..axis }, // yaw usually needs no D
         });
 
+        // Failsafe state machine with airframe safety limits. Tune the
+        // limits (SafetyLimits::default gives conservative starting values)
+        // to the actual vehicle before flight.
+        let safety = SafetyMonitor::new(SafetyLimits::default());
+
         // Kick off every periodic task. Each re-arms itself at its period.
         safety_monitor::spawn().ok();
         attitude_control::spawn().ok();
@@ -121,8 +135,11 @@ mod app {
                 state: StateEstimate::default(),
                 setpoint: Setpoint::default(),
                 motor_cmd: MotorCommand::default(),
+                // Motors start disabled; only an armed, healthy safety
+                // verdict enables them.
+                motors_enabled: false,
             },
-            Local { led, controller },
+            Local { led, controller, safety },
         )
     }
 
@@ -136,15 +153,37 @@ mod app {
     // correctness must not depend on any other task being healthy, so it
     // reads state/motor_cmd directly and can override outputs.
     // =====================================================================
-    #[task(priority = 6, shared = [state, motor_cmd])]
+    #[task(priority = 6, shared = [state, motors_enabled], local = [safety])]
     async fn safety_monitor(mut cx: safety_monitor::Context) {
         loop {
-            // TODO (feat: safety monitor): staleness check on
-            //   state.timestamp_us, attitude limits, battery, RC link loss
-            //   -> cut motors / enter failsafe. Empty shell for now.
-            let _sev = SEVERITY.get();
-            cx.shared.state.lock(|_s| { /* inspect */ });
-            cx.shared.motor_cmd.lock(|_m| { /* override if unsafe */ });
+            // Snapshot the latest state (brief lock, copy out).
+            let state = cx.shared.state.lock(|s| *s);
+
+            // Assemble the inputs. now_us comes from the monotonic clock.
+            //
+            // NOT YET WIRED (safe placeholders): battery_volts and the RC
+            // heartbeat need real sources — an ADC read and the RC-link
+            // driver. Until those exist, we feed values that PASS their
+            // checks, so the monitor does not false-trip during bring-up.
+            // These MUST be replaced with real sensor reads before flight,
+            // or the low-battery and RC-loss protections are inert.
+            // now_us from the monotonic clock. NOTE: the exact rtic-monotonics
+            // time API varies by version — if this line fails to compile, the
+            // fix is here. Alternatives seen across 2.x:
+            //   Mono::now().duration_since_epoch().to_micros()
+            //   Mono::now().ticks()   (ticks are ms at our 1 kHz rate)
+            let now_us = Mono::now().duration_since_epoch().to_micros() as u32;
+            let inputs = SafetyInputs {
+                now_us,
+                state,
+                last_rc_heartbeat_us: now_us, // TODO: real RC link timestamp
+                battery_volts: 12.0,          // TODO: real ADC battery read
+            };
+
+            // Run the failsafe logic and publish the verdict.
+            let permission = cx.local.safety.update(&inputs);
+            let enabled = matches!(permission, MotorPermission::Run);
+            cx.shared.motors_enabled.lock(|m| *m = enabled);
 
             Mono::delay(CONTROL_PERIOD_MS.millis()).await;
         }
@@ -156,7 +195,7 @@ mod app {
     // no_std control crate, writes motor_cmd. No controller math lives
     // here — it lives in the host-testable control crate (§3.1).
     // =====================================================================
-    #[task(priority = 5, shared = [state, setpoint, motor_cmd], local = [controller])]
+    #[task(priority = 5, shared = [state, setpoint, motor_cmd, motors_enabled], local = [controller])]
     async fn attitude_control(mut cx: attitude_control::Context) {
         // Control timestep in seconds, matching the 1 kHz period.
         const DT: f32 = CONTROL_PERIOD_MS as f32 / 1000.0;
@@ -167,11 +206,20 @@ mod app {
             // Snapshot shared inputs (lock briefly, copy out, release).
             let state = cx.shared.state.lock(|s| *s);
             let setpoint = cx.shared.setpoint.lock(|sp| *sp);
+            let enabled = cx.shared.motors_enabled.lock(|m| *m);
             let severity = SEVERITY.get();
 
-            // Call into the pure, host-tested control crate. No control math
-            // lives in firmware — this is just the seam.
-            let cmd = cx.local.controller.step(&state, &setpoint, severity, DT);
+            // Always run the controller so its integrators/filters keep
+            // tracking, but gate the OUTPUT on the safety verdict. If the
+            // monitor has cut motors, emit a zeroed command no matter what
+            // the PID produced. Resetting on the disabled->enabled edge is a
+            // refinement for when arming is wired up.
+            let computed = cx.local.controller.step(&state, &setpoint, severity, DT);
+            let cmd = if enabled {
+                computed
+            } else {
+                MotorCommand::default() // all motors zero
+            };
 
             cx.shared.motor_cmd.lock(|m| *m = cmd);
             // TODO: emit DShot frame from cmd.

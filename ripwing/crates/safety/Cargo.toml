@@ -1,0 +1,11 @@
+[package]
+name = "ripwing-safety"
+version = "0.1.0"
+edition = "2021"
+description = "Pure, host-testable failsafe state machine and safety checks. no_std, no HAL."
+
+[dependencies]
+ripwing-common = { path = "../common" }
+
+[dev-dependencies]
+approx = "0.5"

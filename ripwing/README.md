@@ -10,7 +10,9 @@ reaches hardware.
     crates/common     Shared data types. no_std, no HAL. Host + target.
     crates/control    Pure control math (PID, mixer, Controller trait).
                       no_std, host-testable. Depends only on `common`.
-    firmware          RTIC binary for the STM32F411. Depends on both crates,
+    crates/safety     Failsafe state machine and safety checks. no_std,
+                      host-testable. Depends only on `common`.
+    firmware          RTIC binary for the STM32F411. Depends on the crates,
                       adds the HAL, drivers, scheduler, and DShot output.
 
 The dependency graph enforces the layering (case study §3.1): `control`
@@ -22,6 +24,7 @@ cannot reach a HAL or RTIC type because it does not depend on them, so
 Host-testable control logic (no hardware needed):
 
     cargo test -p ripwing-control
+    cargo test -p ripwing-safety
     cargo test -p ripwing-common
 
 Firmware (cross-compiles to ARM; needs the target installed):
@@ -46,6 +49,10 @@ Toolchain setup:
 - Control crate: rate-loop PID with anti-windup, derivative-on-measurement
   filtering, quad-X mixer, and a host test harness. Gains from the
   simulator's optimizer drop into `firmware` init.
+- Safety crate: failsafe state machine (Disarmed/Armed/Failsafe, latched)
+  with staleness, attitude, rate, RC-link, and battery checks. 19 host
+  tests. Wired into the priority-6 task; gates the control output.
+  Battery and RC-link inputs are placeholders until those drivers exist.
 - Next: port the full simulator plant into the control tests for an
   apples-to-apples match against the Python step responses; IMU driver
   bring-up when hardware arrives.

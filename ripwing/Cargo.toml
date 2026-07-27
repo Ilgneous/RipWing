@@ -14,7 +14,7 @@
 
 [workspace]
 resolver = "2"
-members = ["crates/common", "crates/control", "firmware"]
+members = ["crates/common", "crates/control", "crates/safety", "firmware"]
 
 # Shared release profile for the whole workspace.
 [profile.release]

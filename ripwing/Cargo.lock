@@ -504,9 +504,18 @@ dependencies = [
  "panic-probe",
  "ripwing-common",
  "ripwing-control",
+ "ripwing-safety",
  "rtic",
  "rtic-monotonics",
  "stm32f4xx-hal",
+]
+
+[[package]]
+name = "ripwing-safety"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "ripwing-common",
 ]
 
 [[package]]
