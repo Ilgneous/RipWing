@@ -1,0 +1,28 @@
+# Workspace root for Project RipWing.
+#
+# Layering (case study §3.1), from most portable to least:
+#   crates/common   — plain data types, no_std, no HAL. Host + target.
+#   crates/control  — pure control math (PID, mixer). no_std, no HAL.
+#                     Depends only on `common`. Fully host-testable.
+#   firmware        — the RTIC binary. Depends on both, adds the HAL,
+#                     drivers, and everything chip-specific.
+#
+# The dependency graph enforces the layering: `control` cannot reach
+# for a HAL or an RTIC type because it doesn't depend on them, so the
+# compiler makes "keep control logic host-testable" a structural fact
+# rather than a discipline you have to remember.
+
+[workspace]
+resolver = "2"
+members = ["crates/common", "crates/control", "firmware"]
+
+# Shared release profile for the whole workspace.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = true
+
+[profile.dev]
+opt-level = 1
+debug = true

@@ -1,0 +1,35 @@
+[package]
+name = "ripwing-firmware"
+version = "0.1.0"
+edition = "2021"
+authors = ["Sivan"]
+description = "RipWing flight controller firmware (RTIC binary, STM32F411)."
+
+[dependencies]
+# Workspace crates: the layering from §3.1.
+ripwing-common = { path = "../crates/common" }
+ripwing-control = { path = "../crates/control" }
+
+# RTIC 2.x — the scheduling framework
+rtic = { version = "2.1", features = ["thumbv7-backend"] }
+rtic-monotonics = { version = "2.0", features = ["cortex-m-systick"] }
+
+# Cortex-M runtime
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+
+# HAL — swap this line for a different chip:
+#   F4 -> stm32f4xx-hal   F7 -> stm32f7xx-hal   H7 -> stm32h7xx-hal
+stm32f4xx-hal = { version = "0.22", features = ["stm32f411", "rtic2"] }
+
+# Logging over RTT
+defmt = "0.3"
+defmt-rtt = "0.4"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+# Embedded utilities
+embedded-hal = "1.0"
+heapless = "0.8"
+nalgebra = { version = "0.33", default-features = false, features = ["libm"] }
+
+# Profiles are inherited from the workspace root Cargo.toml.

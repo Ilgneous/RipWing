@@ -478,6 +478,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 
 [[package]]
+name = "ripwing-common"
+version = "0.1.0"
+
+[[package]]
+name = "ripwing-control"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "libm",
+ "ripwing-common",
+]
+
+[[package]]
+name = "ripwing-firmware"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt 0.3.100",
+ "defmt-rtt",
+ "embedded-hal 1.0.0",
+ "heapless",
+ "nalgebra",
+ "panic-probe",
+ "ripwing-common",
+ "ripwing-control",
+ "rtic",
+ "rtic-monotonics",
+ "stm32f4xx-hal",
+]
+
+[[package]]
 name = "rtic"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -695,23 +727,6 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
-
-[[package]]
-name = "uav-flight-controller"
-version = "0.1.0"
-dependencies = [
- "cortex-m",
- "cortex-m-rt",
- "defmt 0.3.100",
- "defmt-rtt",
- "embedded-hal 1.0.0",
- "heapless",
- "nalgebra",
- "panic-probe",
- "rtic",
- "rtic-monotonics",
- "stm32f4xx-hal",
-]
 
 [[package]]
 name = "unicode-ident"

@@ -6,10 +6,13 @@ use panic_probe as _;
 
 mod anomaly;
 mod board;
-mod control;
 mod drivers;
 mod telemetry;
 mod transport;
+
+// NOTE: crate imports for the control and safety logic live INSIDE `mod app`
+// below (next to the transport import), because the code that uses them is
+// inside that module. A `use` at this outer scope would not be visible there.
 
 // Rate-monotonic priority ladder (RTIC: higher number = higher priority).
 // Periods drive the assignment; ties at equal period are broken by
@@ -28,6 +31,9 @@ mod app {
     use crate::transport::{
         MotorCommand, Setpoint, Severity, SeverityFlag, StateEstimate,
     };
+    // The control logic is an external, host-testable crate (§3.1); firmware
+    // calls into it through the Controller trait.
+    use ripwing_control::{AttitudeGains, AttitudeRateController, Controller, PidConfig};
     use rtic_monotonics::systick::prelude::*;
     use stm32f4xx_hal::{
         gpio::{Output, PushPull, PC13},
@@ -58,6 +64,10 @@ mod app {
     #[local]
     struct Local {
         led: PC13<Output<PushPull>>,
+        /// The attitude controller. Owned solely by `attitude_control`, so
+        /// it is a local resource — no lock needed, direct access. Its
+        /// integrators and filters persist across ticks here.
+        controller: AttitudeRateController,
         // Instrumentation pins (§4.7): reserved purely for scope timing.
         // Assign real GPIOs in board.rs when wiring is decided.
         // dbg_control: DbgPin,
@@ -78,6 +88,25 @@ mod app {
 
         defmt::info!("RipWing FC booted");
 
+        // Build the controller with the gains from the simulator's
+        // optimizer. These placeholder values MUST be replaced with your
+        // actual tuned gains; the axis limits are airframe safety bounds.
+        // Because these gains are validated host-side in the control crate's
+        // tests, dropping them in here is the whole point of that workflow.
+        let axis = PidConfig {
+            kp: 0.14,
+            ki: 0.02,
+            kd: 0.008,
+            integral_limit: 0.3,
+            output_limit: 1.0,
+            d_filter_alpha: 0.2,
+        };
+        let controller = AttitudeRateController::new(AttitudeGains {
+            roll: axis,
+            pitch: axis,
+            yaw: PidConfig { kd: 0.0, ..axis }, // yaw usually needs no D
+        });
+
         // Kick off every periodic task. Each re-arms itself at its period.
         safety_monitor::spawn().ok();
         attitude_control::spawn().ok();
@@ -93,7 +122,7 @@ mod app {
                 setpoint: Setpoint::default(),
                 motor_cmd: MotorCommand::default(),
             },
-            Local { led },
+            Local { led, controller },
         )
     }
 
@@ -110,8 +139,9 @@ mod app {
     #[task(priority = 6, shared = [state, motor_cmd])]
     async fn safety_monitor(mut cx: safety_monitor::Context) {
         loop {
-            // TODO: staleness check on state.timestamp_us, attitude limits,
-            //       battery, RC link loss -> cut motors / enter failsafe.
+            // TODO (feat: safety monitor): staleness check on
+            //   state.timestamp_us, attitude limits, battery, RC link loss
+            //   -> cut motors / enter failsafe. Empty shell for now.
             let _sev = SEVERITY.get();
             cx.shared.state.lock(|_s| { /* inspect */ });
             cx.shared.motor_cmd.lock(|_m| { /* override if unsafe */ });
@@ -126,18 +156,22 @@ mod app {
     // no_std control crate, writes motor_cmd. No controller math lives
     // here — it lives in the host-testable control crate (§3.1).
     // =====================================================================
-    #[task(priority = 5, shared = [state, setpoint, motor_cmd])]
+    #[task(priority = 5, shared = [state, setpoint, motor_cmd], local = [controller])]
     async fn attitude_control(mut cx: attitude_control::Context) {
+        // Control timestep in seconds, matching the 1 kHz period.
+        const DT: f32 = CONTROL_PERIOD_MS as f32 / 1000.0;
+
         loop {
             // dbg_control pin HIGH here (scope measures loop WCET, §4.7).
 
+            // Snapshot shared inputs (lock briefly, copy out, release).
             let state = cx.shared.state.lock(|s| *s);
             let setpoint = cx.shared.setpoint.lock(|sp| *sp);
             let severity = SEVERITY.get();
 
-            // TODO: let cmd = control::step(&state, &setpoint, severity);
-            let _ = (state, setpoint, severity);
-            let cmd = MotorCommand::default();
+            // Call into the pure, host-tested control crate. No control math
+            // lives in firmware — this is just the seam.
+            let cmd = cx.local.controller.step(&state, &setpoint, severity, DT);
 
             cx.shared.motor_cmd.lock(|m| *m = cmd);
             // TODO: emit DShot frame from cmd.

@@ -1,0 +1,13 @@
+[package]
+name = "ripwing-common"
+version = "0.1.0"
+edition = "2021"
+description = "Shared, hardware-free data types for RipWing (host + target)."
+
+[dependencies]
+# Intentionally empty. This crate must depend on nothing embedded so it
+# compiles for both the host (tests) and the target (firmware).
+
+[lib]
+# no_std is declared in lib.rs via #![no_std]; it still builds for host
+# because it uses only `core`.

@@ -1,0 +1,34 @@
+# Workspace cargo config.
+#
+# NOTE: we deliberately do NOT set a global `[build] target` here. Doing so
+# would force the host-testable crates (common, control) to cross-compile to
+# the ARM target, breaking `cargo test`. Instead:
+#
+#   - Firmware builds/flashes with an explicit target:
+#       cargo build   -p ripwing-firmware --target thumbv7em-none-eabihf
+#       cargo run     -p ripwing-firmware --target thumbv7em-none-eabihf
+#     (a build alias below shortens this to `cargo fw` / `cargo rfw`.)
+#
+#   - Host crates test on the host, no target flag needed:
+#       cargo test -p ripwing-control
+#       cargo test -p ripwing-common
+
+# Embedded settings apply ONLY when building for the ARM target, so host
+# builds of common/control are unaffected.
+[target.thumbv7em-none-eabihf]
+# Change the chip string to your exact part.
+# Run `probe-rs chip list | grep STM32` to find it.
+runner = "probe-rs run --chip STM32F411CEUx"
+rustflags = [
+  "-C", "link-arg=-Tlink.x",
+  "-C", "link-arg=-Tdefmt.x",
+  "-C", "linker=flip-link",
+]
+
+[env]
+DEFMT_LOG = "info"
+
+# Convenience aliases so you don't type the target every time.
+[alias]
+fw  = "build -p ripwing-firmware --target thumbv7em-none-eabihf"
+rfw = "run -p ripwing-firmware --target thumbv7em-none-eabihf"

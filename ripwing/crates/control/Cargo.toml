@@ -1,0 +1,15 @@
+[package]
+name = "ripwing-control"
+version = "0.1.0"
+edition = "2021"
+description = "Pure, host-testable flight control math (PID, mixer). no_std, no HAL."
+
+[dependencies]
+ripwing-common = { path = "../common" }
+# libm gives us floating-point functions (abs, etc.) in no_std without a
+# dependency on the OS math library. Pulled in as needed.
+libm = "0.2"
+
+[dev-dependencies]
+# Test-only. approx makes float comparisons in tests readable.
+approx = "0.5"
