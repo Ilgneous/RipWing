@@ -19,7 +19,9 @@ use core::sync::atomic::{AtomicU8, Ordering};
 // paths keep working. Some (ImuSample, RcEvent) are not consumed yet but are
 // part of the intended vocabulary; allow the unused-import warning on them.
 #[allow(unused_imports)]
-pub use ripwing_common::{ImuSample, MotorCommand, RcEvent, Setpoint, Severity, StateEstimate};
+pub use ripwing_common::{
+    AttitudeSetpoint, ImuSample, MotorCommand, RateSetpoint, RcEvent, Severity, StateEstimate,
+};
 
 /// Lock-free severity channel: one atomic byte shared between the anomaly
 /// task (writer) and the control task (reader). The control loop reads this

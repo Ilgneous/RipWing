@@ -7,22 +7,29 @@
 //! PID. Swap in an MPC later (case study §7.4) by implementing this trait;
 //! the firmware doesn't change.
 
-use ripwing_common::{MotorCommand, Setpoint, Severity, StateEstimate};
+use ripwing_common::{MotorCommand, RateSetpoint, Severity, StateEstimate};
 
-/// A flight controller: maps (state, setpoint, health) to motor commands.
+/// An inner-loop flight controller: maps (rate command, state, health) to
+/// motor commands.
+///
+/// This trait describes the *inner rate loop* specifically — it consumes a
+/// `RateSetpoint` (desired body rates) and produces motor commands. When the
+/// outer attitude loop is added, it will be a separate stage that produces
+/// the `RateSetpoint` this consumes; that stage will get its own trait (or a
+/// generalized `ControlStage`) at that time.
 pub trait Controller {
     /// Advance one control step.
     ///
-    /// * `state`    — latest fused vehicle state
-    /// * `setpoint` — commanded setpoint
-    /// * `severity` — current ML anomaly severity (a *hint*; the controller
-    ///                may switch to a conservative mode, but the ML never
-    ///                actuates directly — §7.6)
-    /// * `dt`       — timestep in seconds
+    /// * `state`     — latest fused vehicle state
+    /// * `rate_cmd`  — desired body rates + thrust (from outer loop or pilot)
+    /// * `severity`  — current ML anomaly severity (a *hint*; the controller
+    ///                 may switch to a conservative mode, but the ML never
+    ///                 actuates directly — §7.6)
+    /// * `dt`        — timestep in seconds
     fn step(
         &mut self,
         state: &StateEstimate,
-        setpoint: &Setpoint,
+        rate_cmd: &RateSetpoint,
         severity: Severity,
         dt: f32,
     ) -> MotorCommand;

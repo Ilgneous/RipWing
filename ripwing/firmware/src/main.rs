@@ -29,7 +29,7 @@ mod transport;
 #[rtic::app(device = stm32f4xx_hal::pac, peripherals = true, dispatchers = [SPI3, SPI4, SPI5, USART1, USART2, USART6])]
 mod app {
     use crate::transport::{
-        MotorCommand, Setpoint, Severity, SeverityFlag, StateEstimate,
+        MotorCommand, RateSetpoint, Severity, SeverityFlag, StateEstimate,
     };
     // The control logic is an external, host-testable crate (§3.1); firmware
     // calls into it through the Controller trait.
@@ -55,8 +55,11 @@ mod app {
     struct Shared {
         /// Latest fused state: written by fusion, read by control + safety.
         state: StateEstimate,
-        /// Current setpoint: written by RC/outer loop, read by control.
-        setpoint: Setpoint,
+        /// Current rate command, read by the inner control loop. Written by
+        /// the pilot/RC path today; will be written by the outer attitude
+        /// loop once that stage exists. Typed as RateSetpoint so the inner
+        /// loop's input is unambiguous.
+        rate_setpoint: RateSetpoint,
         /// Latest mixer output: written by control, read by safety monitor.
         motor_cmd: MotorCommand,
         /// Safety verdict: written by safety_monitor, read by attitude_control.
@@ -133,7 +136,7 @@ mod app {
         (
             Shared {
                 state: StateEstimate::default(),
-                setpoint: Setpoint::default(),
+                rate_setpoint: RateSetpoint::default(),
                 motor_cmd: MotorCommand::default(),
                 // Motors start disabled; only an armed, healthy safety
                 // verdict enables them.
@@ -191,11 +194,11 @@ mod app {
 
     // =====================================================================
     // PRIORITY 5 — Attitude control (1 kHz)
-    // The hard real-time loop. Reads state + setpoint, calls the pure
-    // no_std control crate, writes motor_cmd. No controller math lives
-    // here — it lives in the host-testable control crate (§3.1).
+    // The hard real-time inner RATE loop. Reads state + rate command, calls
+    // the pure no_std control crate, writes motor_cmd. No controller math
+    // lives here — it lives in the host-testable control crate (§3.1).
     // =====================================================================
-    #[task(priority = 5, shared = [state, setpoint, motor_cmd, motors_enabled], local = [controller])]
+    #[task(priority = 5, shared = [state, rate_setpoint, motor_cmd, motors_enabled], local = [controller])]
     async fn attitude_control(mut cx: attitude_control::Context) {
         // Control timestep in seconds, matching the 1 kHz period.
         const DT: f32 = CONTROL_PERIOD_MS as f32 / 1000.0;
@@ -205,7 +208,7 @@ mod app {
 
             // Snapshot shared inputs (lock briefly, copy out, release).
             let state = cx.shared.state.lock(|s| *s);
-            let setpoint = cx.shared.setpoint.lock(|sp| *sp);
+            let rate_cmd = cx.shared.rate_setpoint.lock(|sp| *sp);
             let enabled = cx.shared.motors_enabled.lock(|m| *m);
             let severity = SEVERITY.get();
 
@@ -214,7 +217,7 @@ mod app {
             // monitor has cut motors, emit a zeroed command no matter what
             // the PID produced. Resetting on the disabled->enabled edge is a
             // refinement for when arming is wired up.
-            let computed = cx.local.controller.step(&state, &setpoint, severity, DT);
+            let computed = cx.local.controller.step(&state, &rate_cmd, severity, DT);
             let cmd = if enabled {
                 computed
             } else {

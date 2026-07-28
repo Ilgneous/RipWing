@@ -25,11 +25,28 @@ pub struct StateEstimate {
     pub timestamp_us: u32,
 }
 
-/// Setpoint the pilot / outer loop commands, consumed by attitude control.
+/// Desired *attitude* (angles) plus thrust — the command consumed by the
+/// outer attitude loop. This is what a pilot stick or position loop produces.
+///
+/// The outer loop compares this against the estimated attitude and produces a
+/// `RateSetpoint` for the inner loop. Until the outer loop exists, nothing
+/// produces this type yet; it is defined now so the cascade is unambiguous
+/// when the outer loop is added.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Setpoint {
-    /// Desired roll, pitch, yaw [rad] (or rates, depending on flight mode).
-    pub attitude: [f32; 3],
+pub struct AttitudeSetpoint {
+    /// Desired roll, pitch, yaw *angles* [rad].
+    pub angles: [f32; 3],
+    /// Desired collective thrust [normalized 0.0..=1.0].
+    pub thrust: f32,
+}
+
+/// Desired *body rates* plus thrust — the command consumed by the inner rate
+/// loop. In a full cascade this is produced by the outer attitude loop; in a
+/// pure rate mode (acro) it comes straight from the pilot.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RateSetpoint {
+    /// Desired roll, pitch, yaw *rates* [rad/s].
+    pub rates: [f32; 3],
     /// Desired collective thrust [normalized 0.0..=1.0].
     pub thrust: f32,
 }
