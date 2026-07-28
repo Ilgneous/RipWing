@@ -175,7 +175,7 @@ mod app {
             // fix is here. Alternatives seen across 2.x:
             //   Mono::now().duration_since_epoch().to_micros()
             //   Mono::now().ticks()   (ticks are ms at our 1 kHz rate)
-            let now_us = Mono::now().duration_since_epoch().to_micros() as u32;
+            let now_us = Mono::now().duration_since_epoch().to_micros();
             let inputs = SafetyInputs {
                 now_us,
                 state,
