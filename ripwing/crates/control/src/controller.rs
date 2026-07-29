@@ -23,8 +23,8 @@ pub trait Controller {
     /// * `state`     — latest fused vehicle state
     /// * `rate_cmd`  — desired body rates + thrust (from outer loop or pilot)
     /// * `severity`  — current ML anomaly severity (a *hint*; the controller
-    ///                 may switch to a conservative mode, but the ML never
-    ///                 actuates directly — §7.6)
+    ///   may switch to a conservative mode, but the ML never
+    ///   actuates directly — §7.6)
     /// * `dt`        — timestep in seconds
     fn step(
         &mut self,

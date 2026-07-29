@@ -28,6 +28,7 @@ mod transport;
 
 #[rtic::app(device = stm32f4xx_hal::pac, peripherals = true, dispatchers = [SPI3, SPI4, SPI5, USART1, USART2, USART6])]
 mod app {
+    use crate::board;
     use crate::transport::{
         take, tick, MotorCommand, RateSetpoint, Severity, SeverityFlag, StateEstimate,
         TaskCounters,
@@ -93,11 +94,17 @@ mod app {
         let rcc = dp.RCC.constrain();
 
         // WeAct BlackPill: 25 MHz HSE crystal.
-        let clocks = rcc.cfgr.use_hse(25.MHz()).sysclk(96.MHz()).freeze();
+        let clocks = rcc.cfgr.use_hse(board::HSE_FREQ_MHZ.MHz()).sysclk(board::SYSCLK_MHZ.MHz()).freeze();
         Mono::start(cx.core.SYST, clocks.sysclk().to_Hz());
 
         let gpioc = dp.GPIOC.split();
-        let led = gpioc.pc13.into_push_pull_output();
+        let mut led = gpioc.pc13.into_push_pull_output();
+
+        if board::LED_ACTIVE_LOW {
+            led.set_high(); // LED off
+        } else {
+            led.set_low(); // LED off
+        }
 
         defmt::info!("RipWing FC booted");
 
@@ -181,7 +188,7 @@ mod app {
             // fix is here. Alternatives seen across 2.x:
             //   Mono::now().duration_since_epoch().to_micros()
             //   Mono::now().ticks()   (ticks are ms at our 1 kHz rate)
-            let now_us = Mono::now().duration_since_epoch().to_micros() as u32;
+            let now_us = Mono::now().duration_since_epoch().to_micros();
             let inputs = SafetyInputs {
                 now_us,
                 state,
