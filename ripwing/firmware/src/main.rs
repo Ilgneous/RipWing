@@ -29,7 +29,8 @@ mod transport;
 #[rtic::app(device = stm32f4xx_hal::pac, peripherals = true, dispatchers = [SPI3, SPI4, SPI5, USART1, USART2, USART6])]
 mod app {
     use crate::transport::{
-        MotorCommand, RateSetpoint, Severity, SeverityFlag, StateEstimate,
+        take, tick, MotorCommand, RateSetpoint, Severity, SeverityFlag, StateEstimate,
+        TaskCounters,
     };
     // The control logic is an external, host-testable crate (§3.1); firmware
     // calls into it through the Controller trait.
@@ -132,6 +133,7 @@ mod app {
         logging::spawn().ok();
         telemetry::spawn().ok();
         heartbeat::spawn().ok();
+        diagnostics::spawn().ok();
 
         (
             Shared {
@@ -149,6 +151,10 @@ mod app {
     /// Static severity channel: ML writes, control reads on its hot path.
     /// A single atomic, so it lives outside the RTIC resource system.
     static SEVERITY: SeverityFlag = SeverityFlag::new();
+
+    /// Per-task iteration counters, sampled once a second by `diagnostics`.
+    /// Bring-up instrumentation: proves each task hits its designed rate.
+    static COUNTERS: TaskCounters = TaskCounters::new();
 
     // =====================================================================
     // PRIORITY 6 — Safety monitor (1 kHz, highest)
@@ -175,7 +181,7 @@ mod app {
             // fix is here. Alternatives seen across 2.x:
             //   Mono::now().duration_since_epoch().to_micros()
             //   Mono::now().ticks()   (ticks are ms at our 1 kHz rate)
-            let now_us = Mono::now().duration_since_epoch().to_micros();
+            let now_us = Mono::now().duration_since_epoch().to_micros() as u32;
             let inputs = SafetyInputs {
                 now_us,
                 state,
@@ -188,6 +194,7 @@ mod app {
             let enabled = matches!(permission, MotorPermission::Run);
             cx.shared.motors_enabled.lock(|m| *m = enabled);
 
+            tick(&COUNTERS.safety);
             Mono::delay(CONTROL_PERIOD_MS.millis()).await;
         }
     }
@@ -228,6 +235,7 @@ mod app {
             // TODO: emit DShot frame from cmd.
 
             // dbg_control pin LOW here.
+            tick(&COUNTERS.control);
             Mono::delay(CONTROL_PERIOD_MS.millis()).await;
         }
     }
@@ -244,6 +252,7 @@ mod app {
             let new_state = StateEstimate::default();
             cx.shared.state.lock(|s| *s = new_state);
 
+            tick(&COUNTERS.fusion);
             Mono::delay(CONTROL_PERIOD_MS.millis()).await;
         }
     }
@@ -260,6 +269,7 @@ mod app {
             // TODO: run quantized inference on the recent telemetry window.
             SEVERITY.set(Severity::Nominal);
 
+            tick(&COUNTERS.anomaly);
             Mono::delay(ANOMALY_PERIOD_MS.millis()).await;
         }
     }
@@ -274,6 +284,7 @@ mod app {
     async fn logging(_cx: logging::Context) {
         loop {
             // TODO: drain ring buffer -> append-only log over DMA.
+            tick(&COUNTERS.logging);
             Mono::delay(LOGGING_PERIOD_MS.millis()).await;
         }
     }
@@ -285,6 +296,7 @@ mod app {
     async fn telemetry(_cx: telemetry::Context) {
         loop {
             // TODO: pack + send a downlink frame.
+            tick(&COUNTERS.telemetry);
             Mono::delay(TELEMETRY_PERIOD_MS.millis()).await;
         }
     }
@@ -298,6 +310,52 @@ mod app {
         loop {
             cx.local.led.toggle();
             Mono::delay(500.millis()).await;
+        }
+    }
+
+    // =====================================================================
+    // Diagnostics — bring-up instrumentation, priority 1 (lowest).
+    //
+    // Samples the per-task counters once a second and reports them. Because
+    // the window is exactly 1 s, each printed count IS that task's measured
+    // rate in Hz. Expected, per the §4.3 schedule:
+    //
+    //   safety 1000, control 1000, fusion 1000,
+    //   anomaly 50, logging 100, telemetry 20
+    //
+    // Sustained shortfall on a high-priority task means the schedule is not
+    // being met; shortfall only on low-priority tasks means they are being
+    // starved by the ones above (which is the design working as intended if
+    // the CPU is genuinely saturated).
+    //
+    // Remove or feature-gate this task once bring-up is done — it costs a
+    // little CPU and flash for no flight benefit.
+    // =====================================================================
+    #[task(priority = 1)]
+    async fn diagnostics(_cx: diagnostics::Context) {
+        // Let the system settle before the first sample so startup transients
+        // do not show up as a bad first reading.
+        Mono::delay(1_000.millis()).await;
+
+        loop {
+            let safety = take(&COUNTERS.safety);
+            let control = take(&COUNTERS.control);
+            let fusion = take(&COUNTERS.fusion);
+            let anomaly = take(&COUNTERS.anomaly);
+            let logging = take(&COUNTERS.logging);
+            let telemetry = take(&COUNTERS.telemetry);
+
+            defmt::info!(
+                "rates Hz: safety={} control={} fusion={} anomaly={} logging={} telemetry={}",
+                safety,
+                control,
+                fusion,
+                anomaly,
+                logging,
+                telemetry
+            );
+
+            Mono::delay(1_000.millis()).await;
         }
     }
 }

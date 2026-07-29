@@ -4,6 +4,10 @@
 #   crates/common   — plain data types, no_std, no HAL. Host + target.
 #   crates/control  — pure control math (PID, mixer). no_std, no HAL.
 #                     Depends only on `common`. Fully host-testable.
+#   crates/filter   — sensor signal conditioning (median + moving average).
+#                     no_std, no HAL. Depends only on `common`.
+#   crates/safety   — failsafe state machine. no_std, no HAL.
+#                     Depends only on `common`.
 #   firmware        — the RTIC binary. Depends on both, adds the HAL,
 #                     drivers, and everything chip-specific.
 #
@@ -14,7 +18,13 @@
 
 [workspace]
 resolver = "2"
-members = ["crates/common", "crates/control", "crates/safety", "firmware"]
+members = [
+    "crates/common",
+    "crates/control",
+    "crates/filter",
+    "crates/safety",
+    "firmware",
+]
 
 # Shared release profile for the whole workspace.
 [profile.release]

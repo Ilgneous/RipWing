@@ -491,6 +491,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ripwing-filter"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "ripwing-common",
+]
+
+[[package]]
 name = "ripwing-firmware"
 version = "0.1.0"
 dependencies = [

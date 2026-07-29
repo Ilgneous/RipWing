@@ -11,7 +11,7 @@
 //! Keeping the atomic out of `common` keeps `common` free of any
 //! synchronization concern.
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 // Re-export the shared data vocabulary so existing `crate::transport::Foo`
 // paths keep working.
@@ -55,4 +55,57 @@ impl Default for SeverityFlag {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Per-task iteration counters for bring-up diagnostics.
+///
+/// Each periodic task increments its counter once per loop. A low-priority
+/// diagnostics task samples and clears them every second, so the printed
+/// value *is* the task's measured rate in Hz. This turns the rate-monotonic
+/// schedule (case study §4.3) from a design assumption into a measurement,
+/// with no oscilloscope required.
+///
+/// Plain atomics rather than RTIC resources: incrementing must be as close
+/// to free as possible on the 1 kHz hot paths, and a counter needs no
+/// priority-ceiling arbitration.
+pub struct TaskCounters {
+    pub safety: AtomicU32,
+    pub control: AtomicU32,
+    pub fusion: AtomicU32,
+    pub anomaly: AtomicU32,
+    pub logging: AtomicU32,
+    pub telemetry: AtomicU32,
+}
+
+impl TaskCounters {
+    pub const fn new() -> Self {
+        Self {
+            safety: AtomicU32::new(0),
+            control: AtomicU32::new(0),
+            fusion: AtomicU32::new(0),
+            anomaly: AtomicU32::new(0),
+            logging: AtomicU32::new(0),
+            telemetry: AtomicU32::new(0),
+        }
+    }
+}
+
+impl Default for TaskCounters {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Increment a counter. Relaxed: we only need the count to be correct
+/// eventually, not to synchronize other memory.
+#[inline]
+pub fn tick(counter: &AtomicU32) {
+    counter.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Read a counter and reset it to zero, returning the count since the last
+/// call. Over a 1 s sampling window this is the task's rate in Hz.
+#[inline]
+pub fn take(counter: &AtomicU32) -> u32 {
+    counter.swap(0, Ordering::Relaxed)
 }
