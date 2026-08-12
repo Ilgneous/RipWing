@@ -171,6 +171,7 @@ mod app {
     // =====================================================================
     #[task(priority = 6, shared = [state, motors_enabled], local = [safety])]
     async fn safety_monitor(mut cx: safety_monitor::Context) {
+        let mut next = Mono::now();
         loop {
             // Snapshot the latest state (brief lock, copy out).
             let state = cx.shared.state.lock(|s| *s);
@@ -202,7 +203,9 @@ mod app {
             cx.shared.motors_enabled.lock(|m| *m = enabled);
 
             tick(&COUNTERS.safety);
-            Mono::delay(CONTROL_PERIOD_MS.millis()).await;
+
+            next += CONTROL_PERIOD_MS.millis();
+            Mono::delay_until(next).await;
         }
     }
 
@@ -216,7 +219,7 @@ mod app {
     async fn attitude_control(mut cx: attitude_control::Context) {
         // Control timestep in seconds, matching the 1 kHz period.
         const DT: f32 = CONTROL_PERIOD_MS as f32 / 1000.0;
-
+        let mut next = Mono::now();
         loop {
             // dbg_control pin HIGH here (scope measures loop WCET, §4.7).
 
@@ -243,7 +246,8 @@ mod app {
 
             // dbg_control pin LOW here.
             tick(&COUNTERS.control);
-            Mono::delay(CONTROL_PERIOD_MS.millis()).await;
+            next += CONTROL_PERIOD_MS.millis();
+            Mono::delay_until(next).await;
         }
     }
 
@@ -254,13 +258,15 @@ mod app {
     // =====================================================================
     #[task(priority = 4, shared = [state])]
     async fn sensor_fusion(mut cx: sensor_fusion::Context) {
+        let mut next = Mono::now();
         loop {
             // TODO: pull filtered sample, run EKF, produce new estimate.
             let new_state = StateEstimate::default();
             cx.shared.state.lock(|s| *s = new_state);
 
             tick(&COUNTERS.fusion);
-            Mono::delay(CONTROL_PERIOD_MS.millis()).await;
+            next += CONTROL_PERIOD_MS.millis();
+            Mono::delay_until(next).await;
         }
     }
 
@@ -272,12 +278,14 @@ mod app {
     // =====================================================================
     #[task(priority = 3)]
     async fn anomaly(_cx: anomaly::Context) {
+    let mut next = Mono::now();
         loop {
             // TODO: run quantized inference on the recent telemetry window.
             SEVERITY.set(Severity::Nominal);
 
             tick(&COUNTERS.anomaly);
-            Mono::delay(ANOMALY_PERIOD_MS.millis()).await;
+            next += ANOMALY_PERIOD_MS.millis();
+            Mono::delay_until(next).await;
         }
     }
 
@@ -289,10 +297,13 @@ mod app {
     // =====================================================================
     #[task(priority = 2)]
     async fn logging(_cx: logging::Context) {
+        let mut next = Mono::now();
         loop {
             // TODO: drain ring buffer -> append-only log over DMA.
             tick(&COUNTERS.logging);
-            Mono::delay(LOGGING_PERIOD_MS.millis()).await;
+            let mut next = Mono::now();
+            next += LOGGING_PERIOD_MS.millis();
+            Mono::delay_until(next).await;
         }
     }
 
@@ -301,10 +312,12 @@ mod app {
     // =====================================================================
     #[task(priority = 1)]
     async fn telemetry(_cx: telemetry::Context) {
+        let mut next = Mono::now();
         loop {
             // TODO: pack + send a downlink frame.
             tick(&COUNTERS.telemetry);
-            Mono::delay(TELEMETRY_PERIOD_MS.millis()).await;
+            next += TELEMETRY_PERIOD_MS.millis();
+            Mono::delay_until(next).await;
         }
     }
 
