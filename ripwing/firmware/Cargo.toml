@@ -26,7 +26,6 @@ stm32f4xx-hal = { version = "0.22", features = ["stm32f411", "rtic2"] }
 # Logging over RTT
 defmt = "0.3"
 defmt-rtt = "0.4"
-panic-probe = { version = "0.3", features = ["print-defmt"] }
 
 # Embedded utilities
 embedded-hal = "1.0"

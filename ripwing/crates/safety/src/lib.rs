@@ -14,7 +14,8 @@
 //! the timestamp stops advancing; we never ask fusion "are you ok?".
 
 #![no_std]
-
+pub mod health;
+pub use health::{HealthMonitor, StallReport};
 use ripwing_common::StateEstimate;
 
 /// Arm state of the vehicle.

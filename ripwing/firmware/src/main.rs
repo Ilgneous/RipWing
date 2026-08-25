@@ -2,11 +2,11 @@
 #![no_main]
 
 use defmt_rtt as _;
-use panic_probe as _;
 
 mod anomaly;
 mod board;
 mod drivers;
+mod panic;
 mod telemetry;
 mod transport;
 
@@ -30,13 +30,16 @@ mod transport;
 mod app {
     use crate::board;
     use crate::transport::{
-        take, tick, MotorCommand, RateSetpoint, Severity, SeverityFlag, StateEstimate,
+        read, tick, MotorCommand, RateSetpoint, Severity, SeverityFlag, StateEstimate,
         TaskCounters,
     };
     // The control logic is an external, host-testable crate (§3.1); firmware
     // calls into it through the Controller trait.
     use ripwing_control::{AttitudeGains, AttitudeRateController, Controller, PidConfig};
-    use ripwing_safety::{MotorPermission, SafetyInputs, SafetyLimits, SafetyMonitor};
+    use ripwing_safety::{
+        HealthMonitor, MotorPermission, SafetyInputs, SafetyLimits, SafetyMonitor
+    };
+    use stm32f4xx_hal::watchdog::IndependentWatchdog;
     use rtic_monotonics::systick::prelude::*;
     use stm32f4xx_hal::{
         gpio::{Output, PushPull, PC13},
@@ -50,6 +53,9 @@ mod app {
     const ANOMALY_PERIOD_MS: u32 = 20; // 50 Hz ML monitor
     const LOGGING_PERIOD_MS: u32 = 10; // 100 Hz recorder drain
     const TELEMETRY_PERIOD_MS: u32 = 50; // 20 Hz downlink
+    const WATCHDOG_PERIOD_MS: u32 = 50; // 20 Hz watchdog refresh
+    const WATCHDOG_TIMEOUT_MS: u32 = 200; // 5 Hz watchdog timeout
+    const WATCHDOG_MIN_TICKS: u32 = 25; // 20 Hz watchdog refresh minimum
 
     // ---- Shared resources (accessed by more than one task) ---------------
     // RTIC arbitrates access by priority ceiling; no manual locks needed.
@@ -86,6 +92,8 @@ mod app {
         // Assign real GPIOs in board.rs when wiring is decided.
         // dbg_control: DbgPin,
         // dbg_sample:  DbgPin,
+
+        iwdg: IndependentWatchdog,
     }
 
     #[init]
@@ -107,6 +115,18 @@ mod app {
         }
 
         defmt::info!("RipWing FC booted");
+
+        if let Some(rec)= crate::panic::take_panic_record() {
+            defmt::error!(
+                "previous boot ended in a panic at line {} (consecutive: {})", 
+                rec.line, 
+                rec.consecutive
+            );
+        }
+
+        // Independent watchdog: clocked from the LSI
+        let mut iwdg = IndependentWatchdog::new(dp.IWDG);
+        iwdg.start(WATCHDOG_TIMEOUT_MS.millis());
 
         // Build the controller with the gains from the simulator's
         // optimizer. These placeholder values MUST be replaced with your
@@ -141,6 +161,7 @@ mod app {
         telemetry::spawn().ok();
         heartbeat::spawn().ok();
         diagnostics::spawn().ok();
+        watchdog::spawn().ok();
 
         (
             Shared {
@@ -151,7 +172,7 @@ mod app {
                 // verdict enables them.
                 motors_enabled: false,
             },
-            Local { led, controller, safety },
+            Local { led, controller, safety, iwdg },
         )
     }
 
@@ -162,6 +183,30 @@ mod app {
     /// Per-task iteration counters, sampled once a second by `diagnostics`.
     /// Bring-up instrumentation: proves each task hits its designed rate.
     static COUNTERS: TaskCounters = TaskCounters::new();
+
+    #[task(priority = 6, local = [iwdg, health: HealthMonitor<3> = HealthMonitor::new([WATCHDOG_MIN_TICKS; 3])])]
+    async fn watchdog(cx: watchdog::Context) {
+        let mut next = Mono::now();
+        loop {
+            let counts = COUNTERS.snapshot();
+            let control_chain = [counts[0], counts[1], counts[2]]; // safety, control, fusion
+            
+            match cx.local.health.check(&control_chain) {
+                Ok(()) => cx.local.iwdg.feed(),
+                Err(stall) => {
+                    defmt::error!(
+                        "task {} stalled: {} ticks, needd {} - withholding watchdog pet", 
+                        stall.index,
+                        stall.observed,
+                        stall.required
+                    );
+                }
+            }
+
+            next += WATCHDOG_PERIOD_MS.millis();
+            Mono::delay_until(next).await;
+        }
+    }
 
     // =====================================================================
     // PRIORITY 6 — Safety monitor (1 kHz, highest)
@@ -351,31 +396,29 @@ mod app {
     // Remove or feature-gate this task once bring-up is done — it costs a
     // little CPU and flash for no flight benefit.
     // =====================================================================
-    #[task(priority = 1)]
-    async fn diagnostics(_cx: diagnostics::Context) {
-        // Let the system settle before the first sample so startup transients
-        // do not show up as a bad first reading.
-        Mono::delay(1_000.millis()).await;
+    #[task(priority = 1, local = [last: [u32; 6] = [0; 6]])]
+    async fn diagnostics(cx: diagnostics::Context) {
+        let mut next = Mono::now() + 1_000u32.millis();
+        Mono::delay_until(next).await;
 
         loop {
-            let safety = take(&COUNTERS.safety);
-            let control = take(&COUNTERS.control);
-            let fusion = take(&COUNTERS.fusion);
-            let anomaly = take(&COUNTERS.anomaly);
-            let logging = take(&COUNTERS.logging);
-            let telemetry = take(&COUNTERS.telemetry);
+            let now = COUNTERS.snapshot();
+            let prev = *cx.local.last;
+            *cx.local.last = now;
+
+            let d: [u32; 6] = core::array::from_fn(|i| now[i].wrapping_sub(prev[i]));
 
             defmt::info!(
                 "rates Hz: safety={} control={} fusion={} anomaly={} logging={} telemetry={}",
-                safety,
-                control,
-                fusion,
-                anomaly,
-                logging,
-                telemetry
+                d[0],
+                d[1],
+                d[2],
+                d[3],
+                d[4],
+                d[5]
             );
-
-            Mono::delay(1_000.millis()).await;
+            next += 1_000u32.millis();
+            Mono::delay_until(next).await;
         }
     }
 }

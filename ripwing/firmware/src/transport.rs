@@ -11,7 +11,7 @@
 //! Keeping the atomic out of `common` keeps `common` free of any
 //! synchronization concern.
 
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use core::{sync::atomic::{AtomicU8, AtomicU32, Ordering}};
 
 // Re-export the shared data vocabulary so existing `crate::transport::Foo`
 // paths keep working.
@@ -88,6 +88,19 @@ impl TaskCounters {
             telemetry: AtomicU32::new(0),
         }
     }
+
+    // Counters in canonical order:
+    // [safety, control, fusion, anomaly, logging, telemetry]
+    pub fn snapshot(&self) -> [u32; 6] {
+        [
+            read(&self.safety),
+            read(&self.control),
+            read(&self.fusion),
+            read(&self.anomaly),
+            read(&self.logging),
+            read(&self.telemetry)
+        ]
+    }
 }
 
 impl Default for TaskCounters {
@@ -103,9 +116,10 @@ pub fn tick(counter: &AtomicU32) {
     counter.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Read a counter and reset it to zero, returning the count since the last
-/// call. Over a 1 s sampling window this is the task's rate in Hz.
+/// Read a counter without clearing it. Counters are free-running and wrap at
+/// 'u32::MAX' (50 days at 1kHz). Several consumers can watch same counter
+/// independently. 
 #[inline]
-pub fn take(counter: &AtomicU32) -> u32 {
-    counter.swap(0, Ordering::Relaxed)
+pub fn read(counter: &AtomicU32) -> u32 {
+    counter.load(Ordering::Relaxed)
 }
