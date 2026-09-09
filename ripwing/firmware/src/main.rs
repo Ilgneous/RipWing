@@ -30,7 +30,7 @@ mod transport;
 mod app {
     use crate::board;
     use crate::transport::{
-        read, tick, MotorCommand, RateSetpoint, Severity, SeverityFlag, StateEstimate,
+        tick, MotorCommand, RateSetpoint, Severity, SeverityFlag, StateEstimate,
         TaskCounters,
     };
     // The control logic is an external, host-testable crate (§3.1); firmware
@@ -346,7 +346,6 @@ mod app {
         loop {
             // TODO: drain ring buffer -> append-only log over DMA.
             tick(&COUNTERS.logging);
-            let mut next = Mono::now();
             next += LOGGING_PERIOD_MS.millis();
             Mono::delay_until(next).await;
         }
