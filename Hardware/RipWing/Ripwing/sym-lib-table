@@ -1,0 +1,4 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "Ripwing")(type "KiCad")(uri "${KIPRJMOD}/Ripwing.kicad_sym")(options "")(descr "Project-local symbols: IMUs, regulators, power mux, load switch, microSD, passives"))
+)
