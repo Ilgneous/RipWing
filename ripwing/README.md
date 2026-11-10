@@ -53,12 +53,19 @@ Toolchain setup:
 ## Status
 
 - Scheduler: six-task RTIC graph at rate-monotonic priorities. Done.
-- Control crate: rate-loop PID with anti-windup, derivative-on-measurement
-  filtering, quad-X mixer (body FLU frame). Cross-checked against QuadSim:
+- Control crate: two-stage cascade. The outer attitude loop (P per axis,
+  shortest-way heading error, rate-demand clamp, tilt-compensated thrust)
+  feeds the rate-loop PIDs (anti-windup, derivative-on-measurement
+  filtering), then the quad-X mixer (body FLU frame). The firmware runs
+  both stages per IMU sample from an `AttitudeSetpoint`, which stays level
+  at zero thrust until the RC driver writes it. Heading hold follows the
+  estimator's gyro-only yaw, so it drifts with gyro bias until there is a
+  magnetometer or EKF. Cross-checked against QuadSim:
   a Rust port of the 10-DOF plant's rotational dynamics matches the Python
   to ~1e-15, and the firmware controller reproduces QuadSim's tuned step
   responses on it, roll, pitch and yaw, at 200 Hz and at the firmware's
-  1 kHz (`crates/control/tests/quadsim_*.rs`). The firmware flies QuadSim's
+  1 kHz, and large steps QuadSim never tested settle without overshoot
+  (`crates/control/tests/quadsim_*.rs`). The firmware flies QuadSim's
   tuned gains (`crates/control/src/gains.rs`); a test fails if they drift
   from the tune. Regenerate the reference data with
   `python -m QuadSim.analysis.export_step_references` from the repo root
@@ -79,7 +86,8 @@ Toolchain setup:
   gate, seeded from accel at boot), 18 host tests. Yaw is gyro-only until
   a magnetometer or the EKF.
 - Next: bench-verify the IMU path on hardware and measure noise with motors
-  spinning; outer attitude loop in the control crate; EKF.
+  spinning; RC driver writing the attitude setpoint (and a rate/acro mode
+  that bypasses the outer loop); EKF.
 
 ## Design notes
 

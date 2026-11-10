@@ -7,14 +7,16 @@
 
 #![no_std]
 
+pub mod angle;
 pub mod attitude;
 pub mod controller;
 pub mod gains;
 pub mod mixer;
 pub mod pid;
 
+pub use angle::{AngleLoopConfig, AttitudeAngleController};
 pub use attitude::{AttitudeGains, AttitudeRateController};
-pub use controller::Controller;
+pub use controller::{AttitudeLoop, Controller};
 pub use pid::{Pid, PidConfig};
 
 // Tests live in a separate file pulled in only when testing. They use std

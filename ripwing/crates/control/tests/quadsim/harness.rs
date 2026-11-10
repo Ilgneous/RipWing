@@ -1,15 +1,17 @@
-//! Closed loop: the firmware's `AttitudeRateController` (rate PIDs + mixer)
-//! driving the ported plant, set up to be comparable with QuadSim's
-//! `CascadedPIDController` inner loop.
+//! Closed loop: the firmware's control cascade driving the ported plant,
+//! set up to be comparable with QuadSim's `CascadedPIDController` attitude
+//! loops.
 //!
 //! What is the code under test and what is test scaffolding:
 //!
-//! * Under test: `AttitudeRateController::step` — the three rate PIDs and
-//!   `mix_quad_x`, in f32, exactly as the firmware calls them.
+//! * Under test, in f32, exactly as the firmware calls them:
+//!   - `AttitudeAngleController::step`: the outer loop (angle error ->
+//!     rate setpoint, heading wrap, rate clamp, tilt compensation);
+//!   - `AttitudeRateController::step`: the three rate PIDs and `mix_quad_x`.
 //! * Scaffolding, mirroring QuadSim so the comparison is like-for-like:
-//!   - the attitude P loop (angle error -> rate setpoint). The control crate
-//!     has no outer loop yet; this is QuadSim's `k_att * (angle_d - angle)`.
-//!   - the collective: QuadSim's gravity feed-forward m·g/max(cosφ·cosθ, 0.5).
+//!   - the collective: the hover fraction m·g / (4·T_max). The outer loop's
+//!     tilt compensation turns it into QuadSim's m·g/max(cosφ·cosθ, 0.5)
+//!     feed-forward (its altitude PID is off in the reference data);
 //!   - the ESC model: throttle = ω²/ω_max² (thrust-linear), which makes the
 //!     mixer the exact inverse of QuadSim's ControlAllocator.
 //!
@@ -31,8 +33,12 @@
 
 use super::fixture::Case;
 use super::plant::{Plant, PlantParams, State};
-use ripwing_common::{RateSetpoint, Severity, StateEstimate};
-use ripwing_control::{AttitudeGains, AttitudeRateController, Controller, PidConfig};
+use ripwing_common::{AttitudeSetpoint, RateSetpoint, Severity, StateEstimate};
+use ripwing_control::gains::MAX_RATE;
+use ripwing_control::{
+    AngleLoopConfig, AttitudeAngleController, AttitudeGains, AttitudeLoop, AttitudeRateController,
+    Controller, PidConfig,
+};
 use std::f64::consts::PI;
 
 /// Firmware motor index (0 FR, 1 RR, 2 RL, 3 FL — see `mixer.rs`) to
@@ -65,11 +71,6 @@ pub fn pid_config(case: &Case, axis: &str, unit: f64, dt: f64) -> PidConfig {
     }
 }
 
-/// QuadSim's yaw error wrap into [-π, π).
-fn wrap_pi(x: f64) -> f64 {
-    (x + PI).rem_euclid(2.0 * PI) - PI
-}
-
 /// How the rate PIDs are fed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DTerm {
@@ -92,64 +93,103 @@ pub struct Sample {
     pub cmd: [f64; 4],
 }
 
+/// Both stages' configuration for one run.
+#[derive(Clone, Copy, Debug)]
+pub struct Setup {
+    pub rate: AttitudeGains,
+    pub angle: AngleLoopConfig,
+}
+
+/// The gains QuadSim used for `case`, converted for control period `dt`.
+/// No rate clamp, like QuadSim; see [`Setup::with_firmware_limits`].
+pub fn setup_from_case(case: &Case, dt: f64) -> Setup {
+    let plant = Plant::new(PlantParams::default());
+    let unit = torque_per_unit(&plant);
+    Setup {
+        rate: AttitudeGains {
+            roll: pid_config(case, "p", unit[0], dt),
+            pitch: pid_config(case, "q", unit[1], dt),
+            yaw: pid_config(case, "r", unit[2], dt),
+        },
+        angle: AngleLoopConfig {
+            k_att: ["k_att_roll", "k_att_pitch", "k_att_yaw"].map(|k| case.get(k) as f32),
+            max_rate: [f32::INFINITY; 3],
+            tilt_compensation: true,
+        },
+    }
+}
+
+impl Setup {
+    /// Add the firmware's outer-loop rate clamp ([`MAX_RATE`]), so the run
+    /// uses the configuration the firmware flies rather than QuadSim's.
+    pub fn with_firmware_limits(mut self) -> Self {
+        self.angle.max_rate = MAX_RATE;
+        self
+    }
+}
+
 /// Run the firmware controller against the plant over `case`'s setpoint
 /// sequence, at control period `dt` (the case's own dt to reproduce it;
-/// another value to ask "do these gains survive a rate change?").
+/// another value to ask "do these gains survive a rate change?"). `setup`
+/// is normally [`setup_from_case`] for the same `dt`.
 ///
 /// The setpoint is read from the fixture as a zero-order hold, so `dt`
 /// need not equal the fixture's.
-pub fn run(case: &Case, dt: f64, dterm: DTerm) -> Vec<Sample> {
-    let plant = Plant::new(PlantParams::default());
-    let unit = torque_per_unit(&plant);
-    let mut ctrl = AttitudeRateController::new(AttitudeGains {
-        roll: pid_config(case, "p", unit[0], dt),
-        pitch: pid_config(case, "q", unit[1], dt),
-        yaw: pid_config(case, "r", unit[2], dt),
-    });
-    ctrl.reset();
-    let k_att = [case.get("k_att_roll"), case.get("k_att_pitch"), case.get("k_att_yaw")];
+pub fn run(case: &Case, setup: &Setup, dt: f64, dterm: DTerm) -> Vec<Sample> {
     let ref_dt = case.dt();
     let duration = case.rows.len() as f64 * ref_dt;
+    let sp = |t: f64| {
+        // Zero-order-hold lookup; the epsilon keeps exact multiples of the
+        // reference period (k*dt == j*ref_dt) on the right sample despite
+        // float rounding.
+        let j = (((t + 1e-9) / ref_dt).floor() as usize).min(case.rows.len() - 1);
+        case.rows[j].sp
+    };
+    simulate(setup, sp, duration, dt, dterm)
+}
+
+/// Run the cascade against the plant from hover, following the attitude
+/// setpoint `sp(t)` = [roll, pitch, yaw] [rad] at a hover collective.
+pub fn simulate(
+    setup: &Setup,
+    sp: impl Fn(f64) -> [f64; 3],
+    duration: f64,
+    dt: f64,
+    dterm: DTerm,
+) -> Vec<Sample> {
+    let plant = Plant::new(PlantParams::default());
+    let mut outer = AttitudeAngleController::new(setup.angle);
+    let mut ctrl = AttitudeRateController::new(setup.rate);
+    outer.reset();
+    ctrl.reset();
     let full_thrust = 4.0 * plant.max_motor_thrust();
+    let hover = (plant.p.mass * plant.p.g / full_thrust) as f32;
 
     let mut x = plant.hover_state();
     let mut out = Vec::new();
     let n = (duration / dt).round() as usize;
     for k in 0..n {
         let t = k as f64 * dt;
-        // Zero-order-hold lookup; the epsilon keeps exact multiples of the
-        // reference period (k*dt == j*ref_dt) on the right sample despite
-        // float rounding.
-        let j = (((t + 1e-9) / ref_dt).floor() as usize).min(case.rows.len() - 1);
-        let sp = case.rows[j].sp;
-
-        // ---- scaffolding: attitude P loop + collective -------------------
-        let rate_sp = [
-            k_att[0] * (sp[0] - x[0]),
-            k_att[1] * (sp[1] - x[1]),
-            k_att[2] * wrap_pi(sp[2] - x[2]),
-        ];
-        let tilt = (x[0].cos() * x[1].cos()).max(0.5);
-        let thrust = (plant.p.mass * plant.p.g / tilt).clamp(0.0, full_thrust);
-
-        // ---- code under test (f32, as on the F411) -----------------------
-        let (sp_rates, meas_rates) = match dterm {
-            DTerm::AsFirmware => (rate_sp, [x[3], x[4], x[5]]),
-            DTerm::PythonEquivalent => (
-                [0.0; 3],
-                [x[3] - rate_sp[0], x[4] - rate_sp[1], x[5] - rate_sp[2]],
-            ),
-        };
         let est = StateEstimate {
             attitude: [x[0] as f32, x[1] as f32, x[2] as f32],
-            body_rates: meas_rates.map(|r| r as f32),
+            body_rates: [x[3] as f32, x[4] as f32, x[5] as f32],
             timestamp_us: 0,
         };
-        let cmd = RateSetpoint {
-            rates: sp_rates.map(|r| r as f32),
-            thrust: (thrust / full_thrust) as f32,
+
+        // ---- code under test (f32, as on the F411) -----------------------
+        let att_sp = AttitudeSetpoint { angles: sp(t).map(|a| a as f32), thrust: hover };
+        let rate_cmd = outer.step(&est, &att_sp, dt as f32);
+        let (est, rate_cmd) = match dterm {
+            DTerm::AsFirmware => (est, rate_cmd),
+            DTerm::PythonEquivalent => (
+                StateEstimate {
+                    body_rates: [0, 1, 2].map(|i| est.body_rates[i] - rate_cmd.rates[i]),
+                    ..est
+                },
+                RateSetpoint { rates: [0.0; 3], ..rate_cmd },
+            ),
         };
-        let motors = ctrl.step(&est, &cmd, Severity::Nominal, dt as f32);
+        let motors = ctrl.step(&est, &rate_cmd, Severity::Nominal, dt as f32);
 
         // ---- ESC model: thrust-linear throttle -> rotor speed command ----
         let mut w_cmd = [0.0; 4];

@@ -388,7 +388,12 @@ gains could not hold heading against the bias (the integrator is capped at
   `pid_tuning.py` then `yaw_tuning.py`, and expect the ratios (not the
   absolute numbers) to carry.
 - The firmware flies these gains: `ripwing/crates/control/src/gains.rs`
-  holds them converted to mixer units for the 1 kHz loop. The control
+  holds them converted to mixer units for the 1 kHz loop. The attitude P
+  gains drive the firmware's outer loop, which adds a rate-demand clamp
+  this controller lacks (yaw 4 rad/s). Unclamped, the tuned yaw loop
+  overshoots 15–16 % on heading steps of 45° or more, because its large
+  integrator winds up against the yaw torque limit. The tuning scenario's
+  30° step sits just below that edge. The control
   crate's QuadSim tests check that they reproduce the Python step responses
   at 1 kHz on all three axes. `quadsim_firmware_gains.rs` fails if the
   constants drift from `tuned_gains.json` (via

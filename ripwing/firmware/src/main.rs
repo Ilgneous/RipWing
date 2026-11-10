@@ -51,14 +51,16 @@ mod app {
     };
     use crate::telemetry::logger::{RawLogConsumer, RawLogQueue};
     use crate::transport::{
-        tick, ControlTick, ImuStats, MotorCommand, RateSetpoint, Severity, SeverityFlag,
+        tick, AttitudeSetpoint, ControlTick, ImuStats, MotorCommand, Severity, SeverityFlag,
         StateEstimate, TaskCounters,
     };
     use cortex_m::peripheral::DWT;
     // The control and estimation logic are external, host-testable crates
-    // (§3.1); firmware calls into them through the Controller and
-    // AttitudeEstimator traits.
-    use ripwing_control::{gains, AttitudeRateController, Controller};
+    // (§3.1); firmware calls into them through the AttitudeLoop,
+    // Controller and AttitudeEstimator traits.
+    use ripwing_control::{
+        gains, AttitudeAngleController, AttitudeLoop, AttitudeRateController, Controller,
+    };
     use ripwing_estimation::{AttitudeEstimator, ComplementaryConfig, ComplementaryFilter};
     use ripwing_safety::{
         HealthMonitor, MotorPermission, SafetyInputs, SafetyLimits, SafetyMonitor
@@ -94,11 +96,10 @@ mod app {
     struct Shared {
         /// Latest fused state: written by fusion, read by control + safety.
         state: StateEstimate,
-        /// Current rate command, read by the inner control loop. Written by
-        /// the pilot/RC path today; will be written by the outer attitude
-        /// loop once that stage exists. Typed as RateSetpoint so the inner
-        /// loop's input is unambiguous.
-        rate_setpoint: RateSetpoint,
+        /// Current attitude command (angles + collective), read by the
+        /// control cascade. Written by the pilot/RC path once that driver
+        /// exists; until then it stays at its default: level, zero thrust.
+        attitude_setpoint: AttitudeSetpoint,
         /// Latest mixer output: written by control, read by safety monitor.
         motor_cmd: MotorCommand,
         /// Safety verdict: written by safety_monitor, read by attitude_control.
@@ -119,7 +120,10 @@ mod app {
     #[local]
     struct Local {
         led: PC13<Output<PushPull>>,
-        /// The attitude controller. Owned solely by `attitude_control`, so
+        /// Outer attitude loop (angles -> rates). Owned solely by
+        /// `attitude_control`, like the rate controller below.
+        angle_loop: AttitudeAngleController,
+        /// The inner rate controller. Owned solely by `attitude_control`, so
         /// it is a local resource — no lock needed, direct access. Its
         /// integrators and filters persist across ticks here.
         controller: AttitudeRateController,
@@ -230,11 +234,13 @@ mod app {
         let mut iwdg = IndependentWatchdog::new(dp.IWDG);
         iwdg.start(WATCHDOG_TIMEOUT_MS.millis());
 
-        // Rate-loop gains from QuadSim's tune of its 7" airframe (roll/pitch
-        // and yaw), converted to mixer units for this 1 kHz loop. See
+        // Control cascade with QuadSim's tune of its 7" airframe: the outer
+        // attitude loop (P gains, rate clamp, tilt compensation) and the
+        // inner rate PIDs, converted to mixer units for this 1 kHz loop. See
         // ripwing_control::gains for the source, the unit conversion and the
-        // test that keeps them in sync. They are for the SIMULATED airframe:
+        // tests that keep them in sync. They are for the SIMULATED airframe:
         // re-identify the plant on the real vehicle before trusting them.
+        let angle_loop = AttitudeAngleController::new(gains::QUADSIM_7IN_ANGLE);
         let controller = AttitudeRateController::new(gains::QUADSIM_7IN);
 
         // Failsafe state machine with airframe safety limits. Tune the
@@ -256,7 +262,7 @@ mod app {
         (
             Shared {
                 state: StateEstimate::default(),
-                rate_setpoint: RateSetpoint::default(),
+                attitude_setpoint: AttitudeSetpoint::default(),
                 motor_cmd: MotorCommand::default(),
                 // Motors start disabled; only an armed, healthy safety
                 // verdict enables them.
@@ -266,6 +272,7 @@ mod app {
             },
             Local {
                 led,
+                angle_loop,
                 controller,
                 safety,
                 iwdg,
@@ -410,20 +417,31 @@ mod app {
 
     // =====================================================================
     // PRIORITY 5 — Attitude control (per IMU sample)
-    // The hard real-time inner RATE loop. Spawned by fusion the moment a
+    // The hard real-time control cascade. Spawned by fusion the moment a
     // fresh estimate exists, so it always consumes the newest sample — one
-    // sample, once. Reads state + rate command, calls the pure no_std
-    // control crate, writes motor_cmd. No controller math lives here (§3.1).
+    // sample, once. Reads state + attitude command, runs the outer attitude
+    // loop then the inner rate loop (both in the pure no_std control crate),
+    // writes motor_cmd. No controller math lives here (§3.1).
     // =====================================================================
-    #[task(priority = 5, shared = [state, rate_setpoint, motor_cmd, motors_enabled], local = [controller])]
+    #[task(
+        priority = 5,
+        shared = [state, attitude_setpoint, motor_cmd, motors_enabled],
+        local = [angle_loop, controller]
+    )]
     async fn attitude_control(mut cx: attitude_control::Context, input: ControlTick) {
         // dbg_control pin HIGH here (scope measures loop WCET, §4.7).
 
         // Snapshot shared inputs (lock briefly, copy out, release).
         let state = cx.shared.state.lock(|s| *s);
-        let rate_cmd = cx.shared.rate_setpoint.lock(|sp| *sp);
+        let att_cmd = cx.shared.attitude_setpoint.lock(|sp| *sp);
         let enabled = cx.shared.motors_enabled.lock(|m| *m);
         let severity = SEVERITY.get();
+
+        // Outer loop: attitude error -> body-rate command (+ tilt-
+        // compensated thrust). Both stages run every sample: the outer loop
+        // is a few multiplies, and running it at 1 kHz is how its gains
+        // were validated against QuadSim.
+        let rate_cmd = cx.local.angle_loop.step(&state, &att_cmd, input.dt);
 
         // Always run the controller so its integrators/filters keep
         // tracking, but gate the OUTPUT on the safety verdict. If the

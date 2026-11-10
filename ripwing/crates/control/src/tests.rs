@@ -128,3 +128,88 @@ fn reset_clears_state() {
     pid.reset();
     approx::assert_abs_diff_eq!(pid.state_integral(), 0.0, epsilon = 1e-9);
 }
+
+// ---------------------------------------------------------------------------
+// Outer attitude loop (angle.rs)
+// ---------------------------------------------------------------------------
+
+mod angle_loop {
+    use crate::angle::{wrap_pi, AngleLoopConfig, AttitudeAngleController, MIN_TILT_COS};
+    use crate::controller::AttitudeLoop;
+    use approx::assert_abs_diff_eq;
+    use core::f32::consts::PI;
+    use ripwing_common::{AttitudeSetpoint, StateEstimate};
+
+    fn ctrl(tilt_compensation: bool) -> AttitudeAngleController {
+        AttitudeAngleController::new(AngleLoopConfig {
+            k_att: [8.0, 7.0, 3.0],
+            max_rate: [6.0, 6.0, 4.0],
+            tilt_compensation,
+        })
+    }
+
+    fn at(attitude: [f32; 3]) -> StateEstimate {
+        StateEstimate { attitude, ..Default::default() }
+    }
+
+    fn sp(angles: [f32; 3], thrust: f32) -> AttitudeSetpoint {
+        AttitudeSetpoint { angles, thrust }
+    }
+
+    #[test]
+    fn proportional_on_each_axis() {
+        let out = ctrl(false).step(&at([0.1, -0.05, 0.2]), &sp([0.2, 0.05, 0.5], 0.4), 0.001);
+        assert_abs_diff_eq!(out.rates[0], 8.0 * 0.1, epsilon = 1e-6);
+        assert_abs_diff_eq!(out.rates[1], 7.0 * 0.1, epsilon = 1e-6);
+        assert_abs_diff_eq!(out.rates[2], 3.0 * 0.3, epsilon = 1e-6);
+        assert_eq!(out.thrust, 0.4);
+    }
+
+    #[test]
+    fn rate_demand_is_clamped_per_axis() {
+        let out = ctrl(false).step(&at([0.0; 3]), &sp([1.0, -1.0, 2.0], 0.5), 0.001);
+        assert_eq!(out.rates, [6.0, -6.0, 4.0]);
+    }
+
+    #[test]
+    fn heading_error_takes_the_short_way() {
+        // 170° -> -170° is +20° through 180°, not -340°.
+        let out = ctrl(false).step(&at([0.0, 0.0, 170f32.to_radians()]), &sp([0.0, 0.0, -170f32.to_radians()], 0.5), 0.001);
+        assert_abs_diff_eq!(out.rates[2], 3.0 * 20f32.to_radians(), epsilon = 1e-5);
+        // And the mirror image.
+        let out = ctrl(false).step(&at([0.0, 0.0, -170f32.to_radians()]), &sp([0.0, 0.0, 170f32.to_radians()], 0.5), 0.001);
+        assert_abs_diff_eq!(out.rates[2], -3.0 * 20f32.to_radians(), epsilon = 1e-5);
+    }
+
+    #[test]
+    fn wrap_pi_matches_quadsim() {
+        // QuadSim: (x + π) mod 2π − π, i.e. [-π, π).
+        assert_abs_diff_eq!(wrap_pi(0.0), 0.0);
+        assert_abs_diff_eq!(wrap_pi(PI), -PI, epsilon = 1e-6);
+        assert_abs_diff_eq!(wrap_pi(-PI), -PI, epsilon = 1e-6);
+        assert_abs_diff_eq!(wrap_pi(3.0 * PI / 2.0), -PI / 2.0, epsilon = 1e-6);
+        assert_abs_diff_eq!(wrap_pi(-3.0 * PI / 2.0), PI / 2.0, epsilon = 1e-6);
+        assert_abs_diff_eq!(wrap_pi(7.0 * PI + 0.25), -PI + 0.25, epsilon = 1e-5);
+        assert!(wrap_pi(f32::NAN).is_nan());
+    }
+
+    #[test]
+    fn tilt_compensation_keeps_vertical_thrust() {
+        let (r, p) = (0.3f32, -0.2f32);
+        let out = ctrl(true).step(&at([r, p, 0.0]), &sp([r, p, 0.0], 0.4), 0.001);
+        assert_abs_diff_eq!(out.thrust * r.cos() * p.cos(), 0.4, epsilon = 1e-6);
+        // Off: passthrough.
+        let out = ctrl(false).step(&at([r, p, 0.0]), &sp([r, p, 0.0], 0.4), 0.001);
+        assert_eq!(out.thrust, 0.4);
+    }
+
+    #[test]
+    fn tilt_compensation_is_floored_and_bounded() {
+        // 80° of bank: cos = 0.17, floored to 0.5, so at most 2x.
+        let out = ctrl(true).step(&at([80f32.to_radians(), 0.0, 0.0]), &sp([0.0; 3], 0.3), 0.001);
+        assert_abs_diff_eq!(out.thrust, 0.3 / MIN_TILT_COS, epsilon = 1e-6);
+        // Never past full throttle.
+        let out = ctrl(true).step(&at([0.5, 0.5, 0.0]), &sp([0.0; 3], 0.9), 0.001);
+        assert_eq!(out.thrust, 1.0);
+    }
+}

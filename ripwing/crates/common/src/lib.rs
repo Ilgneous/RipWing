@@ -34,10 +34,11 @@ pub struct StateEstimate {
 /// Desired *attitude* (angles) plus thrust — the command consumed by the
 /// outer attitude loop. This is what a pilot stick or position loop produces.
 ///
-/// The outer loop compares this against the estimated attitude and produces a
-/// `RateSetpoint` for the inner loop. Until the outer loop exists, nothing
-/// produces this type yet; it is defined now so the cascade is unambiguous
-/// when the outer loop is added.
+/// The outer loop (`ripwing_control::AttitudeAngleController`) compares this
+/// against the estimated attitude and produces a `RateSetpoint` for the
+/// inner loop. In the firmware it is the shared command the RC path will
+/// write; until that driver exists it stays at its default (level, zero
+/// thrust).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AttitudeSetpoint {
     /// Desired roll, pitch, yaw *angles* [rad].

@@ -1,9 +1,10 @@
 //! Attitude rate controller: three PID axes (roll, pitch, yaw) plus mixing.
 //!
-//! This is the concrete `Controller` the firmware runs during bring-up. It
-//! is a *rate* controller — it drives the body angular rates toward the
-//! commanded rates. The outer attitude-angle loop wraps this later; per the
-//! roadmap you bring the inner rate loop up first.
+//! The inner stage of the cascade and the concrete `Controller` the
+//! firmware runs. It is a *rate* controller: it drives the body angular
+//! rates toward the commanded rates. The outer attitude loop
+//! ([`crate::AttitudeAngleController`]) produces those commanded rates
+//! from attitude angles.
 
 use crate::controller::Controller;
 use crate::mixer;
