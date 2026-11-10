@@ -49,6 +49,7 @@ mod app {
         self, Completion, DrdyStamp, FrontEnd, ImuDma, ImuFrame, NoiseReport, StartResult,
         FRAME_LEN,
     };
+    use crate::drivers::power::{PowerAdc, PowerReading};
     use crate::drivers::sensors::{self, CycleDelay, Readings, SecondarySensors};
     use crate::telemetry::logger::{RawLogConsumer, RawLogQueue};
     use crate::transport::{
@@ -64,7 +65,8 @@ mod app {
     };
     use ripwing_estimation::{AttitudeEstimator, ComplementaryConfig, ComplementaryFilter, MagConfig};
     use ripwing_safety::{
-        HealthMonitor, MotorPermission, SafetyInputs, SafetyLimits, SafetyMonitor
+        BatteryConfig, BatteryLevel, BatteryMonitor, BatteryStatus, HealthMonitor, MotorPermission,
+        SafetyInputs, SafetyLimits, SafetyMonitor
     };
     use stm32f4xx_hal::watchdog::IndependentWatchdog;
     use rtic_monotonics::systick::prelude::*;
@@ -124,6 +126,9 @@ mod app {
         /// Latest IMU2 / baro / mag readings and their health: written by
         /// the secondary-sensor poll, printed by diagnostics.
         secondary: Readings,
+        /// Judged battery state: written by the safety monitor (which reads
+        /// the ADC itself), printed by diagnostics.
+        battery: BatteryStatus,
     }
 
     // ---- Local resources (owned by exactly one task) ---------------------
@@ -140,6 +145,11 @@ mod app {
         /// The failsafe state machine. Owned solely by `safety_monitor`, so
         /// it is local — its arm state and latch persist across ticks here.
         safety: SafetyMonitor,
+        /// Battery voltage/current ADC and the monitor that judges them.
+        /// Owned by `safety_monitor`, so the battery verdict depends on no
+        /// other task.
+        power: PowerAdc,
+        battery: BatteryMonitor,
         // Instrumentation pins (§4.7): reserved purely for scope timing.
         // Assign real GPIOs in board.rs when wiring is decided.
         // dbg_control: DbgPin,
@@ -290,6 +300,11 @@ mod app {
         let imu2 = sensors::Imu2::new(imu2_spi, imu2_acc_cs, imu2_gyr_cs);
         let sensors = SecondarySensors::init(i2c, imu2, &mut delay);
 
+        // ---- Battery voltage and current (ADC1) -------------------------
+        let power = PowerAdc::new(dp.ADC1, gpiob.pb0.into_analog(), gpiob.pb1.into_analog());
+        defmt::info!("power: ADC1 up, VDDA measured {} V", power.vdda());
+        let battery = BatteryMonitor::new(BatteryConfig { cells: board::BATTERY_CELLS, ..Default::default() });
+
         // Independent watchdog: clocked from the LSI
         let mut iwdg = IndependentWatchdog::new(dp.IWDG);
         iwdg.start(WATCHDOG_TIMEOUT_MS.millis());
@@ -331,12 +346,15 @@ mod app {
                 imu,
                 noise: NoiseReport::default(),
                 secondary: Readings::default(),
+                battery: BatteryStatus::default(),
             },
             Local {
                 led,
                 angle_loop,
                 controller,
                 safety,
+                power,
+                battery,
                 iwdg,
                 drdy,
                 front_end,
@@ -347,6 +365,26 @@ mod app {
                 cycles_per_us: sysclk_hz / 1_000_000,
             },
         )
+    }
+
+    fn level_name(l: BatteryLevel) -> &'static str {
+        match l {
+            BatteryLevel::Absent => "absent",
+            BatteryLevel::Detecting => "detecting",
+            BatteryLevel::Ok => "ok",
+            BatteryLevel::Low => "LOW",
+            BatteryLevel::Critical => "CRITICAL",
+        }
+    }
+
+    /// One line when the battery level changes. Low/Critical are warnings,
+    /// never a motor cut (see ripwing_safety::battery).
+    fn log_battery_level(b: &BatteryStatus) {
+        match b.level {
+            BatteryLevel::Low => defmt::warn!("battery LOW: {} V over {} cells, land soon", b.volts, b.cells),
+            BatteryLevel::Critical => defmt::error!("battery CRITICAL: {} V over {} cells, land now", b.volts, b.cells),
+            l => defmt::info!("battery {}: {} V, {} cells", level_name(l), b.volts, b.cells),
+        }
     }
 
     /// Static severity channel: ML writes, control reads on its hot path.
@@ -438,32 +476,61 @@ mod app {
     // sensor chain stops, and this is the task that must notice (via the
     // state timestamp going stale) and cut the motors.
     // =====================================================================
-    #[task(priority = 6, shared = [state, motors_enabled], local = [safety])]
+    #[task(
+        priority = 6,
+        shared = [state, motors_enabled, battery],
+        local = [
+            safety,
+            power,
+            battery,
+            last_vbat_us: Option<u32> = None,
+            amps: Option<f32> = None,
+            last_level: BatteryLevel = BatteryLevel::Absent
+        ]
+    )]
     async fn safety_monitor(mut cx: safety_monitor::Context) {
         let mut next = Mono::now();
         loop {
             // Snapshot the latest state (brief lock, copy out).
             let state = cx.shared.state.lock(|s| *s);
 
-            // Assemble the inputs. now_us comes from the monotonic clock.
+            // Battery: collect last tick's conversion, start the next. The
+            // monitor is updated on each voltage reading with the latest
+            // current, over the real interval between voltage readings.
+            let now_us = Mono::now().duration_since_epoch().to_micros();
+            match cx.local.power.poll() {
+                Some(PowerReading::Amps(a)) => *cx.local.amps = Some(a),
+                Some(PowerReading::BatteryVolts(v)) => {
+                    let dt = cx.local.last_vbat_us.replace(now_us).map_or(0.0, |t| now_us.wrapping_sub(t) as f32 * 1e-6);
+                    let status = cx.local.battery.update(v, *cx.local.amps, dt);
+                    if status.level != *cx.local.last_level {
+                        *cx.local.last_level = status.level;
+                        log_battery_level(&status);
+                    }
+                    cx.shared.battery.lock(|b| *b = status);
+                }
+                None => {}
+            }
+            let battery = cx.local.battery.status();
+
+            // Assemble the inputs.
             //
-            // NOT YET WIRED (safe placeholders): battery_volts and the RC
-            // heartbeat need real sources — an ADC read and the RC-link
-            // driver. Until those exist, we feed values that PASS their
-            // checks, so the monitor does not false-trip during bring-up.
-            // These MUST be replaced with real sensor reads before flight,
-            // or the low-battery and RC-loss protections are inert.
+            // NOT YET WIRED (safe placeholder): the RC heartbeat needs the
+            // RC-link driver. Until it exists we feed a value that PASSES
+            // its check, so the monitor does not false-trip during bring-up.
+            // It MUST be replaced before flight, or RC-loss protection is
+            // inert.
+            //
             // now_us from the monotonic clock. NOTE: the exact rtic-monotonics
             // time API varies by version — if this line fails to compile, the
             // fix is here. Alternatives seen across 2.x:
             //   Mono::now().duration_since_epoch().to_micros()
             //   Mono::now().ticks()   (ticks are ms at our 1 kHz rate)
-            let now_us = Mono::now().duration_since_epoch().to_micros();
             let inputs = SafetyInputs {
                 now_us,
                 state,
                 last_rc_heartbeat_us: now_us, // TODO: real RC link timestamp
-                battery_volts: 12.0,          // TODO: real ADC battery read
+                battery,
             };
 
             // Run the failsafe logic and publish the verdict.
@@ -725,7 +792,7 @@ mod app {
     // =====================================================================
     #[task(
         priority = 1,
-        shared = [noise, secondary, state],
+        shared = [noise, secondary, state, battery],
         local = [cycles_per_us, last: [u32; 7] = [0; 7], last_drdy: u32 = 0]
     )]
     async fn diagnostics(mut cx: diagnostics::Context) {
@@ -793,6 +860,18 @@ mod app {
                 ),
                 None => defmt::info!("estimate: rpy deg={} heading_ref={} alt=none", att, est.heading_referenced),
             }
+
+            let b = cx.shared.battery.lock(|b| *b);
+            defmt::info!(
+                "battery: {} {}S {} V (raw {}) {} A {} mAh arm_ok={}",
+                level_name(b.level),
+                b.cells,
+                b.volts,
+                b.volts_raw,
+                b.amps.unwrap_or(f32::NAN),
+                b.mah_used,
+                b.ready_to_arm
+            );
 
             let s = cx.shared.secondary.lock(|s| *s);
             if let Some(i) = s.imu2 {

@@ -104,7 +104,10 @@ Feed measured WCET into the rate-monotonic schedulability check to turn the
 ## What cannot be tested yet
 
 Without ESCs or an RC link: motor output, closed-loop flight, and the
-low-battery / RC-loss failsafe checks (their inputs are placeholders that
-always pass — see `safety_monitor`). The IMU axis mapping
+RC-loss failsafe check (its input is a placeholder that always passes; see
+`safety_monitor`). The battery input is real: wire a 10k/1k divider from
+the pack to PB0, set `VBAT_TRIM` against a multimeter, and check that
+diagnostics reports the right cell count. The current reading needs the
+ESC's current pin on PB1 and its scale in `board::CURRENT_SCALE`. The IMU axis mapping
 (`board::IMU_AXIS`/`IMU_SIGN`) must be set for the airframe before the
 control loop is closed: a wrong sign there inverts a feedback loop.

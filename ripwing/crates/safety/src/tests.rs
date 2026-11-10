@@ -14,6 +14,21 @@ fn limits() -> SafetyLimits {
     SafetyLimits::default()
 }
 
+/// A charged 3S pack, judged by the battery monitor.
+fn healthy_battery() -> BatteryStatus {
+    battery_after(12.4, 1.0)
+}
+
+/// What the battery monitor reports after `secs` at a steady `volts`.
+fn battery_after(volts: f32, secs: f32) -> BatteryStatus {
+    let mut b = BatteryMonitor::new(BatteryConfig::default());
+    let mut s = BatteryStatus::default();
+    for _ in 0..(secs / 0.002) as u32 {
+        s = b.update(volts, None, 0.002);
+    }
+    s
+}
+
 /// A "healthy, level, still" input at time `now`, with fresh state and RC.
 fn healthy_inputs(now_us: u32) -> SafetyInputs {
     SafetyInputs {
@@ -25,7 +40,7 @@ fn healthy_inputs(now_us: u32) -> SafetyInputs {
             ..Default::default()
         },
         last_rc_heartbeat_us: now_us, // fresh link
-        battery_volts: 12.0,          // healthy 3S
+        battery: healthy_battery(),
     }
 }
 
@@ -84,7 +99,7 @@ fn refuses_to_arm_with_stale_state() {
 fn refuses_to_arm_on_low_battery() {
     let mut m = SafetyMonitor::new(limits());
     let mut inp = healthy_inputs(1_000);
-    inp.battery_volts = 9.0; // below 10.5 floor
+    inp.battery = battery_after(10.2, 1.0); // 3.4 V/cell resting
     assert_eq!(m.try_arm(&inp), ArmState::Disarmed);
     assert_eq!(m.last_fault(), Some(SafetyFault::LowBattery));
 }
@@ -95,7 +110,7 @@ fn cannot_arm_from_failsafe_without_disarm() {
     // because we are not Disarmed. Only an explicit disarm clears the latch.
     let mut m = armed_monitor(1_000);
     let mut bad = healthy_inputs(2_000);
-    bad.battery_volts = 8.0;
+    bad.state.attitude[0] = 2.0; // over-tilt
     assert_eq!(m.update(&bad), MotorPermission::Cut);
     assert_eq!(m.arm_state(), ArmState::Failsafe);
 
@@ -155,12 +170,29 @@ fn rc_link_loss_trips_failsafe() {
 }
 
 #[test]
-fn low_battery_trips_failsafe() {
+fn low_battery_in_flight_warns_but_never_cuts() {
+    // Policy: with no auto-land, cutting the motors is a crash. A low or
+    // critical pack in flight is a warning, not a failsafe.
     let mut m = armed_monitor(1_000);
-    let mut inp = healthy_inputs(2_000);
-    inp.battery_volts = 10.0; // < 10.5 floor
-    assert_eq!(m.update(&inp), MotorPermission::Cut);
-    assert_eq!(m.last_fault(), Some(SafetyFault::LowBattery));
+    for (volts, level) in [(10.2, BatteryLevel::Low), (9.6, BatteryLevel::Critical), (0.0, BatteryLevel::Absent)] {
+        let mut inp = healthy_inputs(2_000);
+        inp.battery = battery_after(volts, 4.0);
+        assert_eq!(inp.battery.level, level);
+        assert_eq!(m.update(&inp), MotorPermission::Run, "cut on {level:?}");
+        assert_eq!(m.arm_state(), ArmState::Armed);
+    }
+}
+
+#[test]
+fn refuses_to_arm_without_a_judged_battery() {
+    // USB power only (no pack), or a pack still being counted.
+    for b in [BatteryStatus::default(), battery_after(12.4, 0.1)] {
+        let mut m = SafetyMonitor::new(limits());
+        let mut inp = healthy_inputs(1_000);
+        inp.battery = b;
+        assert_eq!(m.try_arm(&inp), ArmState::Disarmed, "{:?}", b.level);
+        assert_eq!(m.last_fault(), Some(SafetyFault::LowBattery));
+    }
 }
 
 // ---- The latch: failsafe holds even after the fault clears --------------
@@ -231,7 +263,6 @@ fn check_priority_state_age_reported_first() {
     let mut m = armed_monitor(100_000);
     let mut inp = healthy_inputs(100_000);
     inp.state.timestamp_us = 100_000 - 50_000; // stale
-    inp.battery_volts = 5.0; // also low battery
     inp.state.attitude[0] = 2.0; // also over-tilt
     assert_eq!(m.update(&inp), MotorPermission::Cut);
     assert_eq!(m.last_fault(), Some(SafetyFault::StaleState));

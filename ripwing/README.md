@@ -75,9 +75,21 @@ Toolchain setup:
   `python -m QuadSim.analysis.export_step_references` from the repo root
   after changing the Python plant, controller or gains.
 - Safety crate: failsafe state machine (Disarmed/Armed/Failsafe, latched)
-  with staleness, attitude, rate, RC-link, and battery checks. 19 host
-  tests. Wired into the priority-6 task; gates the control output.
-  Battery and RC-link inputs are placeholders until those drivers exist.
+  with staleness, attitude, rate and RC-link checks, plus a battery
+  monitor; 45 host tests. Wired into the priority-6 task; gates the control
+  output.
+  - Battery reading: the safety task reads its own ADC (pack voltage
+    through the ÷11 divider, ESC current sense), non-blocking at 500 Hz per
+    channel, against a VDDA measured at boot.
+  - Battery judging: levels use a sag-filtered voltage with a 2 s hold, so
+    throttle sag never raises a warning. Cell count is detected at connect,
+    and mAh is counted.
+  - Battery policy: low battery refuses arming. In flight, Low and Critical
+    are warnings only, never a motor cut (there is no auto-land, so a cut
+    is a crash).
+  - The current sensor's scale in `board.rs` is a placeholder until the
+    ESC is chosen.
+  - The RC-link input is still a placeholder until that driver exists.
 - Filter crate: median-then-average sensor conditioning with documented
   lag-versus-noise tradeoff, plus a noise meter. Wired in at the IMU
   driver boundary (gyro N=2, accel N=8): raw samples are logged, filtered

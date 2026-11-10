@@ -141,6 +141,52 @@ pub const MAG_DECLINATION_DEG: f32 = 0.0;
 /// field outright, and heading stays gyro-only (heading_referenced = false).
 pub const MAG_CALIBRATION: ripwing_estimation::MagCalibration = ripwing_estimation::MagCalibration::IDENTITY;
 
+// ---- Battery voltage and current ------------------------------------------
+//
+// PCB (Hardware/RipWing):
+//   VBAT_SENSE  PC0  pack voltage through R6 10k / R7 1k (÷11), 100 nF.
+//   CURR_SENSE  PC1  the ESC connector's current pin (J1.3) through 1k,
+//                    100 nF. The scale is the ESC's current sensor's.
+// BlackPill: the F411CE has no PC0/PC1, so PB0 (ADC1_IN8) and PB1
+// (ADC1_IN9), wired the same way: a 10k/1k divider from the pack and the
+// ESC's current pin, each with 100 nF to ground at the pin. PB0/PB1 are
+// the mag/baro interrupt pins on the PCB, unused on the BlackPill.
+//
+// The ADC reference is VDDA (3.3 V); the firmware measures its real value
+// against the internal reference at boot, so supply error does not show
+// up as battery error.
+
+use stm32f4xx_hal::gpio::{Analog, PB0, PB1};
+
+pub type VbatSensePin = PB0<Analog>;
+pub type CurrentSensePin = PB1<Analog>;
+
+/// Pack volts per volt at the pin: (R6 + R7) / R7 = (10k + 1k) / 1k.
+/// 36 V full scale; enough for 6S (25.2 V).
+pub const VBAT_DIVIDER: f32 = 11.0;
+
+/// Trim for resistor tolerance: set to (multimeter reading / reported
+/// reading) once on the bench. 1% resistors leave up to ~2% error.
+pub const VBAT_TRIM: f32 = 1.0;
+
+/// The ESC's current sensor: amps = (pin volts − offset) × amps_per_volt.
+#[derive(Clone, Copy, Debug)]
+pub struct CurrentScale {
+    pub amps_per_volt: f32,
+    pub offset_volts: f32,
+}
+
+/// From the ESC's datasheet (Betaflight's "scale" is in 0.1 mV/A: scale
+/// 400 means 40 mV/A, i.e. 25 A/V). PLACEHOLDER: 25 A/V is a common 4-in-1
+/// value, not this ESC's. Set `None` if the ESC has no current output, so
+/// a floating pin is not reported as current.
+pub const CURRENT_SCALE: Option<CurrentScale> = Some(CurrentScale { amps_per_volt: 25.0, offset_volts: 0.0 });
+
+/// Series cell count of the pack, or `None` to detect it at connect.
+/// Detection is right for any charged or storage pack; fix the count once
+/// the pack is known, so a deeply drained pack cannot be miscounted.
+pub const BATTERY_CELLS: Option<u8> = None;
+
 // ---- Instrumentation ------------------------------------------------------
 //
 // When you wire scope pins, define their types here so the rest of the

@@ -26,6 +26,8 @@ the PCB wherever the F411 has the same pin.
 | I2C1 SDA        | PB9  | I2C1 (AF4) | (PCB: PB9, 2.2k) |
 | Barometer       | I2C1 | 0x46       | BMP581, CSB=VDD, SDO=GND; polled at 50 Hz (PCB INT: PB1) |
 | Magnetometer    | I2C1 | 0x30       | MMC5983MA, CS=VDD; polled at 100 Hz (PCB INT: PB0) |
+| Battery voltage | PB0  | ADC1_IN8   | Pack via 10k/1k divider (÷11), 100 nF at the pin (PCB: PC0) |
+| Battery current | PB1  | ADC1_IN9   | ESC current pin via 1k, 100 nF (PCB: PC1); scale per ESC |
 | ESC 1..4        | TBD  | TIM (PWM)  | DShot/OneShot TBD |
 | SD / flash log  | TBD  | SPI/SDIO   |                  |
 

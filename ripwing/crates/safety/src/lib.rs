@@ -8,13 +8,16 @@
 //! Design constraint (case study §3.3, line 159): the failsafe must not
 //! depend on any other task being healthy. We honour that by having every
 //! check derive its verdict from raw inputs the monitor can independently
-//! judge — a timestamp it compares against *now*, a raw attitude, a raw
-//! battery voltage — rather than trusting a status flag some other task set.
+//! judge — a timestamp it compares against *now*, a raw attitude, a
+//! battery status the safety task computes from its own ADC reads — rather
+//! than trusting a status flag some other task set.
 //! If sensor fusion silently dies, the staleness check catches it because
 //! the timestamp stops advancing; we never ask fusion "are you ok?".
 
 #![no_std]
+pub mod battery;
 pub mod health;
+pub use battery::{BatteryConfig, BatteryLevel, BatteryMonitor, BatteryStatus};
 pub use health::{HealthMonitor, StallReport};
 use ripwing_common::StateEstimate;
 
@@ -43,7 +46,9 @@ pub enum SafetyFault {
     RateLimit,
     /// RC/pilot link heartbeat went stale (lost control).
     RcLinkLoss,
-    /// Battery below the floor (brownout risk).
+    /// Battery absent, not yet judged, or not healthy enough to arm.
+    /// Arming only: in flight a low battery is a warning (see
+    /// [`battery`]), never a cut.
     LowBattery,
 }
 
@@ -70,8 +75,8 @@ pub struct SafetyInputs {
     pub state: StateEstimate,
     /// Timestamp of the last RC/pilot heartbeat [µs].
     pub last_rc_heartbeat_us: u32,
-    /// Battery voltage [V].
-    pub battery_volts: f32,
+    /// Judged battery state (see [`BatteryMonitor`]).
+    pub battery: BatteryStatus,
 }
 
 /// Configurable safety limits. Set once for the airframe.
@@ -85,8 +90,6 @@ pub struct SafetyLimits {
     pub max_tilt_rad: f32,
     /// Max absolute body rate on any axis before failsafe [rad/s].
     pub max_body_rate_rad_s: f32,
-    /// Battery floor below which we refuse to run [V].
-    pub min_battery_volts: f32,
     /// Arming requires attitude within this of level [rad].
     pub arm_max_tilt_rad: f32,
     /// Arming requires body rates below this [rad/s].
@@ -103,7 +106,6 @@ impl Default for SafetyLimits {
             max_rc_age_us: 500_000,       // 500 ms of RC silence = link loss
             max_tilt_rad: 1.396,          // ~80°: past this, recovery unlikely
             max_body_rate_rad_s: 17.45,   // ~1000°/s: implausible in normal flight
-            min_battery_volts: 10.5,      // 3S LiPo floor; set per pack
             arm_max_tilt_rad: 0.087,      // ~5°: must be near level to arm
             arm_max_rate_rad_s: 0.175,    // ~10°/s: must be near still to arm
         }
@@ -183,11 +185,14 @@ impl SafetyMonitor {
         }
     }
 
-    fn check_battery(&self, inp: &SafetyInputs) -> CheckResult {
-        if inp.battery_volts < self.limits.min_battery_volts {
-            Err(SafetyFault::LowBattery)
-        } else {
+    /// Arming only. In flight the battery is never grounds for a cut: with
+    /// no auto-land, cutting is a crash, while a low pack is a warning the
+    /// pilot can act on (`BatteryStatus::level`).
+    fn check_battery_to_arm(&self, inp: &SafetyInputs) -> CheckResult {
+        if inp.battery.ready_to_arm {
             Ok(())
+        } else {
+            Err(SafetyFault::LowBattery)
         }
     }
 
@@ -198,7 +203,6 @@ impl SafetyMonitor {
         self.check_attitude(inp)?;
         self.check_rates(inp)?;
         self.check_rc_link(inp)?;
-        self.check_battery(inp)?;
         Ok(())
     }
 
@@ -214,8 +218,8 @@ impl SafetyMonitor {
         if self.state != ArmState::Disarmed {
             return self.state;
         }
-        // All in-flight checks must pass...
-        if let Err(f) = self.run_all_checks(inp) {
+        // All in-flight checks must pass, and the battery must be healthy...
+        if let Err(f) = self.run_all_checks(inp).and_then(|()| self.check_battery_to_arm(inp)) {
             self.last_fault = Some(f);
             return self.state; // stays Disarmed
         }
@@ -279,3 +283,6 @@ fn abs(x: f32) -> f32 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod battery_tests;
