@@ -75,6 +75,29 @@ pub struct ImuSample {
     pub timestamp_us: u32,
 }
 
+/// One barometer reading.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BaroSample {
+    /// Static pressure [Pa].
+    pub pressure_pa: f32,
+    /// Sensor die temperature [°C].
+    pub temperature_c: f32,
+    /// Monotonic timestamp [µs].
+    pub timestamp_us: u32,
+}
+
+/// One magnetometer reading, already in the body frame (the firmware
+/// applies the board's axis map) and with the sensor's bridge offset
+/// removed. Hard- and soft-iron calibration of the airframe is NOT
+/// applied; that belongs to the estimator.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MagSample {
+    /// Magnetic flux density [µT] (1 gauss = 100 µT).
+    pub field_ut: [f32; 3],
+    /// Monotonic timestamp [µs].
+    pub timestamp_us: u32,
+}
+
 /// Discrete RC / pilot events. Carried on a lock-free SPSC queue in firmware.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RcEvent {

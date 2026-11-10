@@ -49,6 +49,7 @@ mod app {
         self, Completion, DrdyStamp, FrontEnd, ImuDma, ImuFrame, NoiseReport, StartResult,
         FRAME_LEN,
     };
+    use crate::drivers::sensors::{self, CycleDelay, Readings, SecondarySensors};
     use crate::telemetry::logger::{RawLogConsumer, RawLogQueue};
     use crate::transport::{
         tick, AttitudeSetpoint, ControlTick, ImuStats, MotorCommand, Severity, SeverityFlag,
@@ -69,6 +70,7 @@ mod app {
     use rtic_monotonics::systick::prelude::*;
     use stm32f4xx_hal::{
         gpio::{Edge, Output, PushPull, Speed, PC13},
+        i2c::{DutyCycle, I2c, Mode as I2cMode},
         prelude::*,
         spi::Spi,
     };
@@ -86,6 +88,7 @@ mod app {
     const ANOMALY_PERIOD_MS: u32 = 20; // 50 Hz ML monitor
     const LOGGING_PERIOD_MS: u32 = 10; // 100 Hz recorder drain
     const TELEMETRY_PERIOD_MS: u32 = 50; // 20 Hz downlink
+    const SECONDARY_PERIOD_MS: u32 = 2; // 500 Hz IMU2; mag 100 Hz, baro 50 Hz
     const WATCHDOG_PERIOD_MS: u32 = 50; // 20 Hz watchdog refresh
     const WATCHDOG_TIMEOUT_MS: u32 = 200; // 5 Hz watchdog timeout
     const WATCHDOG_MIN_TICKS: u32 = 25; // 20 Hz watchdog refresh minimum
@@ -114,6 +117,9 @@ mod app {
         /// Latest raw-vs-filtered noise figures: written by fusion once a
         /// second, printed by diagnostics.
         noise: NoiseReport,
+        /// Latest IMU2 / baro / mag readings and their health: written by
+        /// the secondary-sensor poll, printed by diagnostics.
+        secondary: Readings,
     }
 
     // ---- Local resources (owned by exactly one task) ---------------------
@@ -145,6 +151,8 @@ mod app {
         estimator: ComplementaryFilter,
         /// Drain side of the raw-sample log queue. Owned by logging.
         raw_log: RawLogConsumer,
+        /// BMI088, BMP581 and MMC5983MA. Owned by their poll task.
+        sensors: SecondarySensors,
         /// DWT cycles per second (the real SYSCLK, as configured).
         cycles_per_s: f32,
         /// DWT cycles per microsecond, for diagnostics.
@@ -230,6 +238,47 @@ mod app {
         let front_end = FrontEnd::new(raw_log_tx);
         let estimator = ComplementaryFilter::new(ComplementaryConfig::default());
 
+        // ---- Secondary sensors (IMU2, baro, mag) ------------------------
+        // Optional: each is probed by chip ID and skipped if absent, so a
+        // missing breakout never stops the boot (drivers::sensors). Before
+        // the watchdog, like the IMU: init blocks ~90 ms with all present.
+        let mut delay = CycleDelay { cycles_per_us: sysclk_hz / 1_000_000 };
+        let gpiob = dp.GPIOB.split();
+
+        // BMI088 on SPI2. Both CS high first: the accel die latches SPI
+        // mode on a CS rising edge, and neither die may be selected yet.
+        let mut imu2_acc_cs = gpiob.pb12.into_push_pull_output();
+        imu2_acc_cs.set_high();
+        let mut imu2_gyr_cs = gpioa.pa8.into_push_pull_output();
+        imu2_gyr_cs.set_high();
+        let imu2_spi = Spi::new(
+            dp.SPI2,
+            (
+                gpiob.pb13.into_alternate(),
+                // Pull-up: with no breakout, MISO reads 0xFF (a clean
+                // wrong-chip ID) instead of floating.
+                gpiob.pb14.into_alternate().internal_pull_up(true),
+                gpiob.pb15.into_alternate(),
+            ),
+            embedded_hal::spi::MODE_0,
+            board::IMU2_SPI_MHZ.MHz(),
+            &clocks,
+        );
+
+        // BMP581 + MMC5983MA on I2C1. Check and free the lines first: the
+        // HAL's I²C has no timeouts and would hang on a stuck bus.
+        let mut scl = gpiob.pb8.into_open_drain_output().internal_pull_up(true);
+        let mut sda = gpiob.pb9.into_open_drain_output().internal_pull_up(true);
+        let i2c = if sensors::recover_i2c(&mut scl, &mut sda, delay.cycles_per_us) {
+            let mode = I2cMode::fast(board::I2C1_KHZ.kHz(), DutyCycle::Ratio2to1);
+            Some(I2c::new(dp.I2C1, (scl, sda), mode, &clocks))
+        } else {
+            None
+        };
+
+        let imu2 = sensors::Imu2::new(imu2_spi, imu2_acc_cs, imu2_gyr_cs);
+        let sensors = SecondarySensors::init(i2c, imu2, &mut delay);
+
         // Independent watchdog: clocked from the LSI
         let mut iwdg = IndependentWatchdog::new(dp.IWDG);
         iwdg.start(WATCHDOG_TIMEOUT_MS.millis());
@@ -257,6 +306,7 @@ mod app {
         telemetry::spawn().ok();
         heartbeat::spawn().ok();
         diagnostics::spawn().ok();
+        secondary_sensors::spawn().ok();
         watchdog::spawn().ok();
 
         (
@@ -269,6 +319,7 @@ mod app {
                 motors_enabled: false,
                 imu,
                 noise: NoiseReport::default(),
+                secondary: Readings::default(),
             },
             Local {
                 led,
@@ -280,6 +331,7 @@ mod app {
                 front_end,
                 estimator,
                 raw_log,
+                sensors,
                 cycles_per_s: sysclk_hz as f32,
                 cycles_per_us: sysclk_hz / 1_000_000,
             },
@@ -539,6 +591,26 @@ mod app {
     }
 
     // =====================================================================
+    // PRIORITY 2 — Secondary sensors (500 Hz poll)
+    // BMI088 every tick, MMC5983MA at 100 Hz, BMP581 at 50 Hz, all blocking
+    // bus reads (~20 µs SPI, ~0.3 ms per I²C read). Below fusion and control,
+    // so a slow or stuck bus cannot delay the flight-critical chain.
+    // =====================================================================
+    #[task(priority = 2, shared = [secondary], local = [sensors])]
+    async fn secondary_sensors(mut cx: secondary_sensors::Context) {
+        let mut next = Mono::now();
+        loop {
+            let now_us = Mono::now().duration_since_epoch().to_micros();
+            let readings = cx.local.sensors.poll(now_us);
+            cx.shared.secondary.lock(|s| *s = readings);
+
+            tick(&COUNTERS.secondary);
+            next += SECONDARY_PERIOD_MS.millis();
+            Mono::delay_until(next).await;
+        }
+    }
+
+    // =====================================================================
     // PRIORITY 2 — Logging (100 Hz)
     // Drains the telemetry ring buffer to the flight recorder via DMA.
     // A slow flash erase here must never reach the control loop (§4.1),
@@ -621,8 +693,8 @@ mod app {
     // =====================================================================
     #[task(
         priority = 1,
-        shared = [noise],
-        local = [cycles_per_us, last: [u32; 6] = [0; 6], last_drdy: u32 = 0]
+        shared = [noise, secondary],
+        local = [cycles_per_us, last: [u32; 7] = [0; 7], last_drdy: u32 = 0]
     )]
     async fn diagnostics(mut cx: diagnostics::Context) {
         use crate::transport::read;
@@ -636,21 +708,22 @@ mod app {
             let prev = *cx.local.last;
             *cx.local.last = now;
 
-            let d: [u32; 6] = core::array::from_fn(|i| now[i].wrapping_sub(prev[i]));
+            let d: [u32; 7] = core::array::from_fn(|i| now[i].wrapping_sub(prev[i]));
 
             let drdy = read(&IMU_STATS.drdy);
             let drdy_rate = drdy.wrapping_sub(*cx.local.last_drdy);
             *cx.local.last_drdy = drdy;
 
             defmt::info!(
-                "rates Hz: drdy={} safety={} control={} fusion={} anomaly={} logging={} telemetry={}",
+                "rates Hz: drdy={} safety={} control={} fusion={} anomaly={} logging={} telemetry={} secondary={}",
                 drdy_rate,
                 d[0],
                 d[1],
                 d[2],
                 d[3],
                 d[4],
-                d[5]
+                d[5],
+                d[6]
             );
 
             let (lat_max, lat_last) = IMU_STATS.take_latency();
@@ -677,6 +750,22 @@ mod app {
                     n.accel_raw,
                     n.accel_filt
                 );
+            }
+
+            let s = cx.shared.secondary.lock(|s| *s);
+            if let Some(i) = s.imu2 {
+                defmt::info!("imu2: gyro deg/s={} accel m/s2={}", i.gyro.map(|x| x * RAD_TO_DEG), i.accel);
+            }
+            if let Some(b) = s.baro {
+                defmt::info!("baro: {} Pa {} C", b.pressure_pa, b.temperature_c);
+            }
+            if let Some(m) = s.mag {
+                defmt::info!("mag: uT={}", m.field_ut);
+            }
+            for (name, h) in [("imu2", s.health[0]), ("baro", s.health[1]), ("mag", s.health[2])] {
+                if h.present && (h.errors > 0 || h.failed) {
+                    defmt::warn!("{}: {}", name, h);
+                }
             }
 
             next += 1_000u32.millis();

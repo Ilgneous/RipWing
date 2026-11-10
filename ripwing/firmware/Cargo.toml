@@ -12,6 +12,7 @@ ripwing-control = { path = "../crates/control" }
 ripwing-safety = { path = "../crates/safety" }
 ripwing-filter = { path = "../crates/filter" }
 ripwing-estimation = { path = "../crates/estimation" }
+ripwing-sensors = { path = "../crates/sensors", features = ["defmt"] }
 
 # RTIC 2.x — the scheduling framework
 rtic = { version = "2.1", features = ["thumbv7-backend"] }

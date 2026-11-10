@@ -1,0 +1,18 @@
+[package]
+name = "ripwing-sensors"
+version = "0.1.0"
+edition = "2021"
+description = "Chip drivers for BMI088, BMP581 and MMC5983MA over embedded-hal 1.0. no_std, no HAL."
+
+[dependencies]
+ripwing-common = { path = "../common" }
+embedded-hal = "1.0"
+libm = "0.2"
+# Optional: lets the firmware log driver errors with `{}`.
+defmt = { version = "0.3", optional = true }
+
+[features]
+defmt = ["dep:defmt"]
+
+[dev-dependencies]
+approx = "0.5"

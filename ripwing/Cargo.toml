@@ -10,6 +10,9 @@
 #                     EKF later). no_std, no HAL. Depends only on `common`.
 #   crates/safety   — failsafe state machine. no_std, no HAL.
 #                     Depends only on `common`.
+#   crates/sensors  — chip drivers (BMI088, BMP581, MMC5983MA) written
+#                     against embedded-hal 1.0 traits, so the same code runs
+#                     on the F411 and the H723 PCB. no_std, no HAL.
 #   firmware        — the RTIC binary. Depends on both, adds the HAL,
 #                     drivers, and everything chip-specific.
 #
@@ -26,6 +29,7 @@ members = [
     "crates/filter",
     "crates/estimation",
     "crates/safety",
+    "crates/sensors",
     "firmware",
 ]
 

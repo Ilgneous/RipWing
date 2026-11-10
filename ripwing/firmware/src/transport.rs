@@ -75,6 +75,7 @@ pub struct TaskCounters {
     pub anomaly: AtomicU32,
     pub logging: AtomicU32,
     pub telemetry: AtomicU32,
+    pub secondary: AtomicU32,
 }
 
 impl TaskCounters {
@@ -86,19 +87,21 @@ impl TaskCounters {
             anomaly: AtomicU32::new(0),
             logging: AtomicU32::new(0),
             telemetry: AtomicU32::new(0),
+            secondary: AtomicU32::new(0),
         }
     }
 
     // Counters in canonical order:
-    // [safety, control, fusion, anomaly, logging, telemetry]
-    pub fn snapshot(&self) -> [u32; 6] {
+    // [safety, control, fusion, anomaly, logging, telemetry, secondary]
+    pub fn snapshot(&self) -> [u32; 7] {
         [
             read(&self.safety),
             read(&self.control),
             read(&self.fusion),
             read(&self.anomaly),
             read(&self.logging),
-            read(&self.telemetry)
+            read(&self.telemetry),
+            read(&self.secondary),
         ]
     }
 }

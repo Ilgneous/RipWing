@@ -17,6 +17,9 @@ reaches hardware.
                       no_std, host-testable.
     crates/safety     Failsafe state machine and safety checks. no_std,
                       host-testable. Depends only on `common`.
+    crates/sensors    BMI088, BMP581, MMC5983MA chip drivers on the
+                      embedded-hal 1.0 traits. no_std, no HAL, host-tested
+                      against register-level fakes.
     firmware          RTIC binary for the STM32F411. Depends on the crates,
                       adds the HAL, drivers, scheduler, and DShot output.
 
@@ -32,6 +35,7 @@ Host-testable control logic (no hardware needed):
     cargo test -p ripwing-filter
     cargo test -p ripwing-estimation
     cargo test -p ripwing-safety
+    cargo test -p ripwing-sensors
     cargo test -p ripwing-common
 
 Firmware (cross-compiles to ARM; needs the target installed):
@@ -85,8 +89,15 @@ Toolchain setup:
 - Estimation crate: quaternion complementary filter (τ = 1 s, accel norm
   gate, seeded from accel at boot), 18 host tests. Yaw is gyro-only until
   a magnetometer or the EKF.
+- Sensors crate: BMI088 (IMU2), BMP581 baro and MMC5983MA mag drivers on
+  embedded-hal 1.0, so they run on the F411 now and the H723 PCB later.
+  Host tests run against register-level fakes of each chip. The firmware
+  polls them at 500/50/100 Hz, on the PCB's SPI2 and I2C1 pins. Each one is
+  optional at boot (probed by chip ID), and a sensor that keeps failing is
+  dropped. Readings are published and printed but not yet fused.
 - Next: bench-verify the IMU path on hardware and measure noise with motors
-  spinning; RC driver writing the attitude setpoint (and a rate/acro mode
+  spinning; fuse the magnetometer (yaw) and barometer (altitude) into the
+  estimator; RC driver writing the attitude setpoint (and a rate/acro mode
   that bypasses the outer loop); EKF.
 
 ## Design notes
