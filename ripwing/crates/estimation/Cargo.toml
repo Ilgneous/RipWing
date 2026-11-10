@@ -1,0 +1,13 @@
+[package]
+name = "ripwing-estimation"
+version = "0.1.0"
+edition = "2021"
+description = "Pure, host-testable attitude estimation (complementary filter; EKF later). no_std, no HAL."
+
+[dependencies]
+ripwing-common = { path = "../common" }
+# Trig (atan2/asin/sqrt) without the OS math library.
+libm = "0.2"
+
+[dev-dependencies]
+approx = "0.5"

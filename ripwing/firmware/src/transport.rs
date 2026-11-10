@@ -123,3 +123,77 @@ pub fn tick(counter: &AtomicU32) {
 pub fn read(counter: &AtomicU32) -> u32 {
     counter.load(Ordering::Relaxed)
 }
+
+/// What the sensor chain hands the control task for each sample.
+#[derive(Clone, Copy, Debug)]
+pub struct ControlTick {
+    /// Seconds since the previous sample, measured between the sensor's own
+    /// data-ready edges (not assumed from the nominal ODR).
+    pub dt: f32,
+    /// DWT cycle count at this sample's data-ready edge, for end-to-end
+    /// latency measurement.
+    pub drdy_cycles: u32,
+}
+
+/// Counters and timing for the sensor-driven chain. Atomics for the same
+/// reason as `TaskCounters`: written on the hot path, read by diagnostics.
+pub struct ImuStats {
+    /// Data-ready edges seen.
+    pub drdy: AtomicU32,
+    /// Edges that arrived while the previous SPI transfer was still in
+    /// flight (that sample is lost).
+    pub dma_busy: AtomicU32,
+    /// Samples that arrived while the estimator or controller was still
+    /// working on the previous one. Nonzero means compute exceeds the
+    /// sample period.
+    pub chain_overruns: AtomicU32,
+    /// Frames the driver rejected as invalid.
+    pub rejected: AtomicU32,
+    /// DMA transfer errors and stuck-transfer recoveries.
+    pub bus_errors: AtomicU32,
+    /// Raw samples dropped because the log queue was full.
+    pub log_drops: AtomicU32,
+    /// Raw samples drained by the logging task.
+    pub logged: AtomicU32,
+    /// Worst data-ready -> motor-command latency since last read [cycles].
+    latency_max: AtomicU32,
+    /// Most recent data-ready -> motor-command latency [cycles].
+    latency_last: AtomicU32,
+}
+
+impl ImuStats {
+    pub const fn new() -> Self {
+        Self {
+            drdy: AtomicU32::new(0),
+            dma_busy: AtomicU32::new(0),
+            chain_overruns: AtomicU32::new(0),
+            rejected: AtomicU32::new(0),
+            bus_errors: AtomicU32::new(0),
+            log_drops: AtomicU32::new(0),
+            logged: AtomicU32::new(0),
+            latency_max: AtomicU32::new(0),
+            latency_last: AtomicU32::new(0),
+        }
+    }
+
+    #[inline]
+    pub fn record_latency(&self, cycles: u32) {
+        self.latency_last.store(cycles, Ordering::Relaxed);
+        self.latency_max.fetch_max(cycles, Ordering::Relaxed);
+    }
+
+    /// (worst since the previous call, most recent), in cycles. Resets the
+    /// worst-case so each report covers one window.
+    pub fn take_latency(&self) -> (u32, u32) {
+        (
+            self.latency_max.swap(0, Ordering::Relaxed),
+            self.latency_last.load(Ordering::Relaxed),
+        )
+    }
+}
+
+impl Default for ImuStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -13,7 +13,13 @@
 #![no_std]
 
 /// Estimated vehicle state produced by sensor fusion, consumed by the
-/// attitude controller. Widen to the full state vector (attitude
+/// attitude controller.
+///
+/// Frame: body FLU (x forward, y left, z up), right-handed. Positive roll
+/// is right side down, positive pitch is nose DOWN, positive yaw is nose
+/// left. The IMU axis map, the estimator, the mixer and QuadSim all use
+/// this frame; the control crate's QuadSim tests fail if the mixer drifts
+/// from it. Widen to the full state vector (attitude
 /// quaternion, body rates, position, velocity) as the estimator matures.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct StateEstimate {

@@ -6,6 +6,8 @@
 #                     Depends only on `common`. Fully host-testable.
 #   crates/filter   — sensor signal conditioning (median + moving average).
 #                     no_std, no HAL. Depends only on `common`.
+#   crates/estimation — attitude estimation (complementary filter now,
+#                     EKF later). no_std, no HAL. Depends only on `common`.
 #   crates/safety   — failsafe state machine. no_std, no HAL.
 #                     Depends only on `common`.
 #   firmware        — the RTIC binary. Depends on both, adds the HAL,
@@ -22,6 +24,7 @@ members = [
     "crates/common",
     "crates/control",
     "crates/filter",
+    "crates/estimation",
     "crates/safety",
     "firmware",
 ]

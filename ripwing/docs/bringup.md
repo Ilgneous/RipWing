@@ -48,9 +48,33 @@ FAIL — LED blinks at the wrong rate:
 
 ## 3. Schedule verification
 
+Requires the IMU wired per `docs/hardware.md`: the control chain is paced
+by the IMU's data-ready line, so without an IMU, init panics with
+`IMU init failed: WhoAmI(..)` (0x00 / 0xFF there means wiring, not a bad
+chip). After three consecutive panics the board halts instead of resetting.
+
 With diagnostics enabled, once a second you should see:
 
-    rates Hz: safety=1000 control=1000 fusion=1000 anomaly=50 logging=100 telemetry=20
+    rates Hz: drdy=1000 safety=1000 control=1000 fusion=1000 anomaly=50 logging=100 telemetry=20
+    imu: latency us max=.. last=.. | dma_busy=0 overrun=0 rejected=N bus_err=0 log_drop=0 logged=..
+    noise std: gyro deg/s raw=[..] filt=[..] | accel m/s2 raw=[..] filt=[..]
+
+`drdy`, `control` and `fusion` follow the IMU's oscillator, not the MCU's,
+so they read ~1000 ± the sensor's clock tolerance — but they must equal
+each other. `control` below `drdy` means samples are being lost; the
+`imu:` line says where (`dma_busy`: SPI too slow; `overrun`: compute longer
+than a sample period; `bus_err`: DMA faults). `rejected` counts a handful of
+invalid frames while the gyro starts up (~30 ms); it must stop growing after
+boot. A single "task stalled" watchdog message at boot is from that same
+startup window.
+
+`latency` is data-ready edge to motor command ready. It should be small
+(tens of µs) and, more importantly, STABLE: max close to last. That
+stability is what the switch from SysTick to data-ready buys.
+
+The `noise` line is the input to the filter window choice (see the
+`GYRO_WINDOW`/`ACCEL_WINDOW` comment in `firmware/src/drivers/imu.rs`).
+Record it at rest on the bench, then again with motors spinning.
 
 These are the §4.3 design rates, measured. Interpretation:
 
@@ -79,6 +103,8 @@ Feed measured WCET into the rate-monotonic schedulability check to turn the
 
 ## What cannot be tested yet
 
-Without an IMU, ESCs, or an RC link: sensor sampling, the control loop with
-real inputs, motor output, and the low-battery / RC-loss failsafe checks
-(their inputs are placeholders that always pass — see `safety_monitor`).
+Without ESCs or an RC link: motor output, closed-loop flight, and the
+low-battery / RC-loss failsafe checks (their inputs are placeholders that
+always pass — see `safety_monitor`). The IMU axis mapping
+(`board::IMU_AXIS`/`IMU_SIGN`) must be set for the airframe before the
+control loop is closed: a wrong sign there inverts a feedback loop.

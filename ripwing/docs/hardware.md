@@ -8,7 +8,12 @@ Migration target: STM32H743 for ML compute headroom + custom PCB.
 | Function        | Pin  | Peripheral | Notes            |
 |-----------------|------|------------|------------------|
 | Status LED      | PC13 | GPIO       | Active low on BlackPill |
-| IMU             | TBD  | SPI/I2C    |                  |
+| IMU SCK         | PA5  | SPI1 (AF5) | ICM-42688-P, 12 MHz, mode 0 |
+| IMU MISO        | PA6  | SPI1 (AF5) |                  |
+| IMU MOSI        | PA7  | SPI1 (AF5) |                  |
+| IMU CS          | PA4  | GPIO       | Active low, driven by firmware |
+| IMU INT1 (DRDY) | PA1  | EXTI1      | Rising edge; paces the control chain |
+| IMU DMA         | —    | DMA2 S0/S3 ch3 | SPI1 RX / TX     |
 | Barometer       | TBD  | I2C        |                  |
 | ESC 1..4        | TBD  | TIM (PWM)  | DShot/OneShot TBD |
 | SD / flash log  | TBD  | SPI/SDIO   |                  |

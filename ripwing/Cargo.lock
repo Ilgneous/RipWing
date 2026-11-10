@@ -481,6 +481,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ripwing-estimation"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "libm",
+ "ripwing-common",
+]
+
+[[package]]
 name = "ripwing-filter"
 version = "0.1.0"
 dependencies = [
@@ -501,6 +510,8 @@ dependencies = [
  "nalgebra",
  "ripwing-common",
  "ripwing-control",
+ "ripwing-estimation",
+ "ripwing-filter",
  "ripwing-safety",
  "rtic",
  "rtic-monotonics",

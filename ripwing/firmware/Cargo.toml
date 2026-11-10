@@ -10,6 +10,8 @@ description = "RipWing flight controller firmware (RTIC binary, STM32F411)."
 ripwing-common = { path = "../crates/common" }
 ripwing-control = { path = "../crates/control" }
 ripwing-safety = { path = "../crates/safety" }
+ripwing-filter = { path = "../crates/filter" }
+ripwing-estimation = { path = "../crates/estimation" }
 
 # RTIC 2.x — the scheduling framework
 rtic = { version = "2.1", features = ["thumbv7-backend"] }

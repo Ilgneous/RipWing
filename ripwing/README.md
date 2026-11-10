@@ -12,6 +12,9 @@ reaches hardware.
                       no_std, host-testable. Depends only on `common`.
     crates/filter     Sensor conditioning: median-of-3 spike rejection into
                       an N-tap moving average. no_std, host-testable.
+    crates/estimation Attitude estimation: quaternion complementary filter
+                      behind an AttitudeEstimator trait (EKF later).
+                      no_std, host-testable.
     crates/safety     Failsafe state machine and safety checks. no_std,
                       host-testable. Depends only on `common`.
     firmware          RTIC binary for the STM32F411. Depends on the crates,
@@ -27,6 +30,7 @@ Host-testable control logic (no hardware needed):
 
     cargo test -p ripwing-control
     cargo test -p ripwing-filter
+    cargo test -p ripwing-estimation
     cargo test -p ripwing-safety
     cargo test -p ripwing-common
 
@@ -50,18 +54,32 @@ Toolchain setup:
 
 - Scheduler: six-task RTIC graph at rate-monotonic priorities. Done.
 - Control crate: rate-loop PID with anti-windup, derivative-on-measurement
-  filtering, quad-X mixer, and a host test harness. Gains from the
-  simulator's optimizer drop into `firmware` init.
+  filtering, quad-X mixer (body FLU frame). Cross-checked against QuadSim:
+  a Rust port of the 10-DOF plant's rotational dynamics matches the Python
+  to ~1e-15, and the firmware controller reproduces QuadSim's tuned step
+  responses on it, roll, pitch and yaw, at 200 Hz and at the firmware's
+  1 kHz (`crates/control/tests/quadsim_*.rs`). The firmware flies QuadSim's
+  tuned gains (`crates/control/src/gains.rs`); a test fails if they drift
+  from the tune. Regenerate the reference data with
+  `python -m QuadSim.analysis.export_step_references` from the repo root
+  after changing the Python plant, controller or gains.
 - Safety crate: failsafe state machine (Disarmed/Armed/Failsafe, latched)
   with staleness, attitude, rate, RC-link, and battery checks. 19 host
   tests. Wired into the priority-6 task; gates the control output.
   Battery and RC-link inputs are placeholders until those drivers exist.
 - Filter crate: median-then-average sensor conditioning with documented
-  lag-versus-noise tradeoff and 20 host tests. Not yet wired into firmware
-  (no IMU driver to feed it); attaches at the driver/fusion boundary.
-- Next: port the full simulator plant into the control tests for an
-  apples-to-apples match against the Python step responses; IMU driver
-  bring-up when hardware arrives.
+  lag-versus-noise tradeoff, plus a noise meter. Wired in at the IMU
+  driver boundary (gyro N=2, accel N=8): raw samples are logged, filtered
+  samples go downstream.
+- IMU: ICM-42688-P on SPI1 with DMA. The control chain is sensor-driven:
+  data-ready -> DMA burst read -> fusion -> control, each stage spawned by
+  the previous one. Transfers overlap computation. The safety monitor stays
+  on SysTick so it can detect a dead sensor chain.
+- Estimation crate: quaternion complementary filter (τ = 1 s, accel norm
+  gate, seeded from accel at boot), 18 host tests. Yaw is gyro-only until
+  a magnetometer or the EKF.
+- Next: bench-verify the IMU path on hardware and measure noise with motors
+  spinning; outer attitude loop in the control crate; EKF.
 
 ## Design notes
 

@@ -5,9 +5,11 @@
 //! against a plant and assert on its behaviour, so a porting bug surfaces
 //! in `cargo test` in seconds rather than on the drone.
 //!
-//! The plant here is a deliberately simple first-order angular-rate model.
-//! Replace / augment it with a port of your 10-DOF simulator plant to get a
-//! true apples-to-apples check against the Python step responses.
+//! The plant here is a deliberately simple first-order angular-rate model,
+//! for unit-level PID behaviour. The apples-to-apples check against the
+//! Python simulator — a port of QuadSim's 10-DOF rotational dynamics and
+//! its step responses — lives in `tests/quadsim_plant_port.rs` and
+//! `tests/quadsim_step_response.rs`.
 
 use crate::pid::{Pid, PidConfig};
 

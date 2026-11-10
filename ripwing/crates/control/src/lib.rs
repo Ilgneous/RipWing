@@ -9,6 +9,7 @@
 
 pub mod attitude;
 pub mod controller;
+pub mod gains;
 pub mod mixer;
 pub mod pid;
 

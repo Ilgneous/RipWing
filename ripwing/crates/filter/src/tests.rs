@@ -261,3 +261,65 @@ fn imu_filter_rejects_a_gyro_spike_without_touching_accel() {
     approx::assert_abs_diff_eq!(out.gyro[0], 0.0, epsilon = 1e-6);
     approx::assert_abs_diff_eq!(out.accel[2], 9.81, epsilon = 1e-5);
 }
+
+// ---- noise meter ---------------------------------------------------------
+
+#[test]
+fn noise_meter_reads_zero_for_a_constant() {
+    let mut m = NoiseMeter3::new();
+    for _ in 0..100 {
+        m.update([1.0, -2.0, 9.81]);
+    }
+    let sd = m.std_dev();
+    for s in sd {
+        approx::assert_abs_diff_eq!(s, 0.0, epsilon = 1e-5);
+    }
+    approx::assert_abs_diff_eq!(m.mean()[2], 9.81, epsilon = 1e-5);
+}
+
+#[test]
+fn noise_meter_measures_known_spread() {
+    // Alternating +/-1 around a mean has population std exactly 1.
+    let mut m = NoiseMeter3::new();
+    for i in 0..1000 {
+        let s = if i % 2 == 0 { 1.0 } else { -1.0 };
+        m.update([s, 2.0 * s, 0.0]);
+    }
+    let sd = m.std_dev();
+    approx::assert_abs_diff_eq!(sd[0], 1.0, epsilon = 1e-4);
+    approx::assert_abs_diff_eq!(sd[1], 2.0, epsilon = 1e-4);
+    approx::assert_abs_diff_eq!(sd[2], 0.0, epsilon = 1e-6);
+}
+
+#[test]
+fn noise_meter_stays_accurate_on_a_large_mean() {
+    // The accelerometer case: tiny spread riding on ~1 g. A naive
+    // sum-of-squares in f32 cancels catastrophically here.
+    let mut m = NoiseMeter3::new();
+    for i in 0..10_000 {
+        let s = if i % 2 == 0 { 0.01 } else { -0.01 };
+        m.update([0.0, 0.0, 9.81 + s]);
+    }
+    approx::assert_relative_eq!(m.std_dev()[2], 0.01, max_relative = 0.01);
+}
+
+#[test]
+fn moving_average_noise_factor_matches_the_table() {
+    // Cross-check the table in average.rs with the meter: pseudo-random
+    // white noise through a 4-tap average should come out near 0.50x.
+    let mut raw = NoiseMeter3::new();
+    let mut out = NoiseMeter3::new();
+    let mut f: MovingAverage<4> = MovingAverage::new();
+    let mut seed: u32 = 0x1234_5678;
+    for _ in 0..50_000 {
+        // xorshift32 -> uniform in [-1, 1)
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let x = (seed as f32 / u32::MAX as f32) * 2.0 - 1.0;
+        raw.update([x, 0.0, 0.0]);
+        out.update([f.update(x), 0.0, 0.0]);
+    }
+    let factor = out.std_dev()[0] / raw.std_dev()[0];
+    approx::assert_abs_diff_eq!(factor, 0.50, epsilon = 0.02);
+}

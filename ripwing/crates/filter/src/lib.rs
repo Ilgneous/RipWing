@@ -26,10 +26,12 @@
 pub mod average;
 pub mod median;
 pub mod sensor;
+pub mod stats;
 
 pub use average::{group_delay_samples, group_delay_seconds, MovingAverage};
 pub use median::{median3, MedianOf3};
 pub use sensor::{ImuFilter, ScalarFilter, Vec3Filter};
+pub use stats::NoiseMeter3;
 
 #[cfg(test)]
 mod tests;
