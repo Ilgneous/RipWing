@@ -62,7 +62,7 @@ mod app {
     use ripwing_control::{
         gains, AttitudeAngleController, AttitudeLoop, AttitudeRateController, Controller,
     };
-    use ripwing_estimation::{AttitudeEstimator, ComplementaryConfig, ComplementaryFilter};
+    use ripwing_estimation::{AttitudeEstimator, ComplementaryConfig, ComplementaryFilter, MagConfig};
     use ripwing_safety::{
         HealthMonitor, MotorPermission, SafetyInputs, SafetyLimits, SafetyMonitor
     };
@@ -102,6 +102,10 @@ mod app {
         /// Current attitude command (angles + collective), read by the
         /// control cascade. Written by the pilot/RC path once that driver
         /// exists; until then it stays at its default: level, zero thrust.
+        /// The RC path must capture the current yaw as the heading
+        /// setpoint at arming: with the magnetometer fused, yaw at boot is
+        /// the real heading, not 0, so arming on the default 0 would turn
+        /// the vehicle to north.
         attitude_setpoint: AttitudeSetpoint,
         /// Latest mixer output: written by control, read by safety monitor.
         motor_cmd: MotorCommand,
@@ -236,7 +240,14 @@ mod app {
 
         let (raw_log_tx, raw_log) = cx.local.raw_log_q.split();
         let front_end = FrontEnd::new(raw_log_tx);
-        let estimator = ComplementaryFilter::new(ComplementaryConfig::default());
+        let estimator = ComplementaryFilter::new(ComplementaryConfig {
+            mag: MagConfig {
+                declination_rad: board::MAG_DECLINATION_DEG.to_radians(),
+                calibration: board::MAG_CALIBRATION,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
 
         // ---- Secondary sensors (IMU2, baro, mag) ------------------------
         // Optional: each is probed by chip ID and skipped if absent, so a
@@ -527,11 +538,22 @@ mod app {
     // driver boundary (log raw, filter), the attitude estimator, publishes
     // state, and spawns control. Ranked below control: control preempts it
     // the instant it is spawned, which is exactly the order we want.
+    //
+    // Magnetometer and barometer readings arrive from the priority-2 poll
+    // through the `secondary` resource; each new one (by timestamp) is
+    // folded in once, before the IMU step.
     // =====================================================================
     #[task(
         priority = 4,
-        shared = [state, noise],
-        local = [front_end, estimator, cycles_per_s, last_drdy: Option<u32> = None]
+        shared = [state, noise, secondary],
+        local = [
+            front_end,
+            estimator,
+            cycles_per_s,
+            last_drdy: Option<u32> = None,
+            last_mag_us: Option<u32> = None,
+            last_baro_us: Option<u32> = None
+        ]
     )]
     async fn sensor_fusion(mut cx: sensor_fusion::Context, frame: ImuFrame) {
         // Sample interval from the sensor's own edges. First sample: nominal.
@@ -548,6 +570,16 @@ mod app {
         }
         if let Some(report) = cx.local.front_end.take_noise_report() {
             cx.shared.noise.lock(|n| *n = report);
+        }
+
+        let (mag, baro) = cx.shared.secondary.lock(|s| (s.mag, s.baro));
+        if let Some(m) = mag.filter(|m| Some(m.timestamp_us) != *cx.local.last_mag_us) {
+            *cx.local.last_mag_us = Some(m.timestamp_us);
+            cx.local.estimator.update_mag(&m);
+        }
+        if let Some(b) = baro.filter(|b| Some(b.timestamp_us) != *cx.local.last_baro_us) {
+            *cx.local.last_baro_us = Some(b.timestamp_us);
+            cx.local.estimator.update_baro(&b);
         }
 
         let estimate = cx.local.estimator.update(&filtered, dt);
@@ -693,7 +725,7 @@ mod app {
     // =====================================================================
     #[task(
         priority = 1,
-        shared = [noise, secondary],
+        shared = [noise, secondary, state],
         local = [cycles_per_us, last: [u32; 7] = [0; 7], last_drdy: u32 = 0]
     )]
     async fn diagnostics(mut cx: diagnostics::Context) {
@@ -750,6 +782,16 @@ mod app {
                     n.accel_raw,
                     n.accel_filt
                 );
+            }
+
+            let est = cx.shared.state.lock(|s| *s);
+            let att = est.attitude.map(|x| x * RAD_TO_DEG);
+            match est.vertical {
+                Some(v) => defmt::info!(
+                    "estimate: rpy deg={} heading_ref={} alt m={} climb m/s={}",
+                    att, est.heading_referenced, v.altitude_m, v.climb_rate_mps
+                ),
+                None => defmt::info!("estimate: rpy deg={} heading_ref={} alt=none", att, est.heading_referenced),
             }
 
             let s = cx.shared.secondary.lock(|s| *s);

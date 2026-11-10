@@ -21,6 +21,10 @@
 /// this frame; the control crate's QuadSim tests fail if the mixer drifts
 /// from it. Widen to the full state vector (attitude
 /// quaternion, body rates, position, velocity) as the estimator matures.
+///
+/// The world frame is level with z up. Yaw is measured counter-clockwise
+/// from true north when `heading_referenced` is set (magnetometer fused);
+/// otherwise it is relative to wherever the gyro integration started.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct StateEstimate {
     /// Roll, pitch, yaw estimates [rad].
@@ -29,6 +33,21 @@ pub struct StateEstimate {
     pub body_rates: [f32; 3],
     /// Monotonic sample timestamp [µs], for staleness checks.
     pub timestamp_us: u32,
+    /// Yaw is referenced to north by the magnetometer. False means yaw is
+    /// gyro-only and drifts with gyro bias.
+    pub heading_referenced: bool,
+    /// Height and climb rate, once a barometer reference exists.
+    pub vertical: Option<VerticalState>,
+}
+
+/// Vertical channel of the state estimate: barometer fused with the
+/// accelerometer.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VerticalState {
+    /// Height above the reference set at boot [m], world z up.
+    pub altitude_m: f32,
+    /// Vertical velocity [m/s], positive climbing.
+    pub climb_rate_mps: f32,
 }
 
 /// Desired *attitude* (angles) plus thrust — the command consumed by the
@@ -39,6 +58,11 @@ pub struct StateEstimate {
 /// inner loop. In the firmware it is the shared command the RC path will
 /// write; until that driver exists it stays at its default (level, zero
 /// thrust).
+///
+/// The yaw angle is absolute, in the estimate's frame. Whoever writes this
+/// must capture the current yaw as the heading setpoint at arming. With the
+/// magnetometer fused, yaw at boot is the real heading, not 0, so arming
+/// on the default 0 would turn the vehicle to north.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AttitudeSetpoint {
     /// Desired roll, pitch, yaw *angles* [rad].
@@ -78,11 +102,11 @@ pub struct ImuSample {
 /// One barometer reading.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BaroSample {
-    /// Static pressure [Pa].
+    /// Static pressure (Pa).
     pub pressure_pa: f32,
     /// Sensor die temperature [°C].
     pub temperature_c: f32,
-    /// Monotonic timestamp [µs].
+    /// Monotonic timestamp (µs).
     pub timestamp_us: u32,
 }
 
@@ -92,9 +116,9 @@ pub struct BaroSample {
 /// applied; that belongs to the estimator.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MagSample {
-    /// Magnetic flux density [µT] (1 gauss = 100 µT).
+    /// Magnetic flux density (µT) (1 gauss = 100 µT).
     pub field_ut: [f32; 3],
-    /// Monotonic timestamp [µs].
+    /// Monotonic timestamp (µs).
     pub timestamp_us: u32,
 }
 

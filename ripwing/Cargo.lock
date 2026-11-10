@@ -534,7 +534,6 @@ dependencies = [
  "approx",
  "defmt 0.3.100",
  "embedded-hal 1.0.0",
- "libm",
  "ripwing-common",
 ]
 

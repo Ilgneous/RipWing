@@ -4,7 +4,7 @@
 //! estimator here runs under `cargo test` on the host before it flies.
 //!
 //! The firmware calls into this crate through the [`AttitudeEstimator`]
-//! trait, the same way it calls the controller through `Controller`. The
+//! trait (IMU every sample; magnetometer and barometer as they arrive), the same way it calls the controller through `Controller`. The
 //! first implementation is a [`ComplementaryFilter`]: simple enough to debug
 //! by inspection, good enough to fly. The EKF that replaces it implements
 //! the same trait, and the firmware does not change.
@@ -20,7 +20,10 @@
 //!   `[0, 0, +g]` — the sensor measures the reaction to gravity, which
 //!   points *up*.
 //! * attitude: `[roll, pitch, yaw]` [rad], ZYX Euler angles of the body
-//!   relative to a level, yaw-zero reference frame. Each angle is positive
+//!   relative to a level world frame. Yaw is counter-clockwise from north
+//!   once the magnetometer is fused (true north with the declination set,
+//!   magnetic otherwise), and from the boot heading before that; the
+//!   estimate's `heading_referenced` says which. Each angle is positive
 //!   by the right-hand rule about its body axis, the same sign as the gyro
 //!   rate that produces it; [`accel_roll_pitch`] gives the exact relation
 //!   to the accelerometer, and the tests pin it down. Mapping these to
@@ -31,11 +34,13 @@
 
 pub mod complementary;
 pub mod quat;
+pub mod vertical;
 
-pub use complementary::{ComplementaryConfig, ComplementaryFilter};
+pub use complementary::{ComplementaryConfig, ComplementaryFilter, MagCalibration, MagConfig};
 pub use quat::Quat;
+pub use vertical::{pressure_altitude_m, VerticalConfig, VerticalFilter};
 
-use ripwing_common::{ImuSample, StateEstimate};
+use ripwing_common::{BaroSample, ImuSample, MagSample, StateEstimate};
 
 /// Standard gravity [m/s²].
 pub const GRAVITY: f32 = 9.806_65;
@@ -51,6 +56,15 @@ pub trait AttitudeEstimator {
     ///   correct when the IMU's oscillator is a percent off, or a sample is
     ///   dropped and this one covers two periods.
     fn update(&mut self, sample: &ImuSample, dt: f32) -> StateEstimate;
+
+    /// Fold in one magnetometer reading (body frame, sensor offset removed;
+    /// the estimator applies the airframe's iron calibration). Corrects
+    /// heading only. Ignored until the attitude is initialized.
+    fn update_mag(&mut self, mag: &MagSample);
+
+    /// Fold in one barometer reading. The first few set the ground
+    /// reference; after that each corrects the vertical channel.
+    fn update_baro(&mut self, baro: &BaroSample);
 
     /// Forget everything. The next sample re-initializes the estimate.
     fn reset(&mut self);
@@ -70,3 +84,6 @@ pub fn accel_roll_pitch(accel: [f32; 3]) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod fusion_tests;

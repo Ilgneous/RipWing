@@ -129,6 +129,18 @@ pub const IMU2_SIGN: [f32; 3] = [1.0, 1.0, 1.0];
 pub const MAG_AXIS: [usize; 3] = [0, 1, 2];
 pub const MAG_SIGN: [f32; 3] = [1.0, 1.0, 1.0];
 
+/// Local magnetic declination [deg], east positive. Look it up for the
+/// flying site (NOAA's calculator); 0 leaves yaw relative to magnetic
+/// north, which is fine for heading hold.
+pub const MAG_DECLINATION_DEG: f32 = 0.0;
+
+/// Airframe hard/soft-iron calibration for the magnetometer. IDENTITY means
+/// uncalibrated. Measure it with the vehicle assembled (battery, motors,
+/// wiring in place) by rotating it through all orientations and fitting an
+/// ellipsoid. Until then the estimator's strength gate may reject the
+/// field outright, and heading stays gyro-only (heading_referenced = false).
+pub const MAG_CALIBRATION: ripwing_estimation::MagCalibration = ripwing_estimation::MagCalibration::IDENTITY;
+
 // ---- Instrumentation ------------------------------------------------------
 //
 // When you wire scope pins, define their types here so the rest of the

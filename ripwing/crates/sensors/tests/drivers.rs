@@ -170,16 +170,6 @@ fn bmp581_without_power_on_reset_is_not_ready() {
     assert_eq!(baro.init(&mut bus, &mut d, &Default::default()), Err(Error::NotReady));
 }
 
-#[test]
-fn pressure_altitude() {
-    let p0 = 101_325.0;
-    assert_abs_diff_eq!(bmp581::pressure_altitude_m(p0, p0), 0.0, epsilon = 1e-3);
-    // Near sea level, 1 hPa is about 8.4 m.
-    assert_abs_diff_eq!(bmp581::pressure_altitude_m(p0 - 100.0, p0), 8.4, epsilon = 0.1);
-    // Standard atmosphere: 1000 m is 89 875 Pa.
-    assert_abs_diff_eq!(bmp581::pressure_altitude_m(89_875.0, p0), 1000.0, epsilon = 2.0);
-}
-
 // ---------------------------------------------------------------------------
 // MMC5983MA
 // ---------------------------------------------------------------------------

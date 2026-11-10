@@ -29,11 +29,38 @@
 //! time constant `τ = 1 / kp` and the complementary high-pass on the gyro
 //! path — hence the name. `kp` is the one tuning knob.
 //!
+//! # Heading from the magnetometer
+//!
+//! Gravity says nothing about heading, so without help yaw drifts at the
+//! gyro bias rate. [`update_mag`](AttitudeEstimator::update_mag) corrects
+//! it toward the magnetometer:
+//!
+//! ```text
+//!   m_w  = R(q) · m_body             field in the world frame (tilt removed)
+//!   err  = −wrap(atan2(m_w.y, m_w.x) + declination)
+//!   q    = Rz(kp_mag · err · Δt) ⊗ q
+//! ```
+//!
+//! The correction is a rotation about the *world vertical* only, so the
+//! magnetometer cannot touch roll or pitch: a field bent by motor current
+//! or nearby steel can at worst pull heading, never tilt. The very first
+//! accepted reading snaps heading instead of converging over several τ,
+//! which happens at boot, before arming. Later corrections are rate-limited
+//! by `kp_mag`, so a magnetometer that comes back mid-flight cannot jerk
+//! the yaw estimate (and with it the heading loop).
+//!
+//! Readings are gated on field strength: outside the Earth's plausible
+//! range, or far from the strength seen when heading was first referenced,
+//! the field is disturbed and the sample is ignored.
+//!
+//! # Altitude from the barometer
+//!
+//! The vertical channel ([`VerticalFilter`]) runs alongside: every IMU
+//! sample propagates it with the world-frame vertical acceleration (which
+//! needs this filter's attitude), and every barometer reading corrects it.
+//!
 //! Known limits, deliberately accepted for a first estimator:
 //!
-//! * **Yaw is gyro-only.** Gravity says nothing about heading, so yaw drifts
-//!   at the gyro bias rate. The rate loop does not use yaw angle, so this
-//!   does not affect flight today; a magnetometer (or the EKF) fixes it.
 //! * **Sustained acceleration biases tilt.** In a coordinated turn the
 //!   accelerometer does not point at gravity. The norm gate below rejects
 //!   the obvious cases (|a| far from 1 g); slow, near-1 g errors get through
@@ -43,8 +70,84 @@
 //!   the EKF estimates bias as a state.
 
 use crate::quat::Quat;
+use crate::vertical::{VerticalConfig, VerticalFilter};
 use crate::{accel_roll_pitch, AttitudeEstimator, GRAVITY};
-use ripwing_common::{ImuSample, StateEstimate};
+use core::f32::consts::{PI, TAU};
+use ripwing_common::{BaroSample, ImuSample, MagSample, StateEstimate, VerticalState};
+
+/// Hard- and soft-iron correction for the magnetometer, applied before
+/// fusion: `m = soft_iron · (raw − hard_iron)`. Both come from a
+/// calibration flight or bench rotation of the assembled airframe (motors,
+/// battery and wiring in place). Identity means uncalibrated.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MagCalibration {
+    /// Offset from fields that rotate with the airframe [µT].
+    pub hard_iron_ut: [f32; 3],
+    /// Correction for distortion by nearby ferrous material (row-major).
+    pub soft_iron: [[f32; 3]; 3],
+}
+
+impl MagCalibration {
+    pub const IDENTITY: Self = Self {
+        hard_iron_ut: [0.0; 3],
+        soft_iron: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    };
+
+    pub fn apply(&self, raw: [f32; 3]) -> [f32; 3] {
+        let d = [0, 1, 2].map(|i| raw[i] - self.hard_iron_ut[i]);
+        self.soft_iron.map(|row| row[0] * d[0] + row[1] * d[1] + row[2] * d[2])
+    }
+}
+
+/// Magnetometer fusion settings.
+#[derive(Clone, Copy, Debug)]
+pub struct MagConfig {
+    /// Heading correction gain [1/s]; heading converges with τ = 1/kp.
+    pub kp: f32,
+    /// Accept a reading only if its strength is within this fraction of the
+    /// strength seen when heading was first referenced (0.25 = ±25 %).
+    pub strength_gate: f32,
+    /// Plausible Earth field strength (µT): about 22 to 67 everywhere.
+    /// Readings outside are disturbed (or uncalibrated) and ignored.
+    pub min_field_ut: f32,
+    pub max_field_ut: f32,
+    /// After this many consecutive strength-gate rejections, take the
+    /// current strength as the new reference: the old one was wrong (e.g.
+    /// referenced next to a steel bench), not every reading since.
+    pub reseed_after: u16,
+    /// Magnetic declination (rad), east positive: magnetic north lies this
+    /// far east of true north. With it set, yaw is relative to true north
+    /// (pointing at magnetic north gives yaw = −declination, since yaw is
+    /// counter-clockwise). 0 makes yaw relative to magnetic north.
+    pub declination_rad: f32,
+    pub calibration: MagCalibration,
+    /// Without an accepted reading for this long (s), heading is reported
+    /// as no longer referenced.
+    pub timeout_s: f32,
+}
+
+impl Default for MagConfig {
+    fn default() -> Self {
+        Self {
+            // τ = 5 s: slower than the accel correction, because magnetic
+            // disturbances are larger and slower than vibration.
+            kp: 0.2,
+            strength_gate: 0.25,
+            min_field_ut: 20.0,
+            max_field_ut: 70.0,
+            // 2 s at 100 Hz.
+            reseed_after: 200,
+            declination_rad: 0.0,
+            calibration: MagCalibration::IDENTITY,
+            timeout_s: 0.5,
+        }
+    }
+}
+
+fn wrap_pi(x: f32) -> f32 {
+    let r = libm::fmodf(x + PI, TAU);
+    (if r < 0.0 { r + TAU } else { r }) - PI
+}
 
 /// Tuning for [`ComplementaryFilter`].
 #[derive(Clone, Copy, Debug)]
@@ -58,10 +161,12 @@ pub struct ComplementaryConfig {
     /// accelerating and the reading is not a gravity reference; the filter
     /// coasts on the gyro for that sample.
     pub accel_gate: f32,
-    /// Largest `dt` [s] integrated in one step. A longer gap (stalled
+    /// Largest `dt` (s) integrated in one step. A longer gap (stalled
     /// sensor, debugger halt) is clamped to this rather than integrating one
     /// stale rate over the whole gap.
     pub max_dt: f32,
+    pub mag: MagConfig,
+    pub vertical: VerticalConfig,
 }
 
 impl Default for ComplementaryConfig {
@@ -74,6 +179,8 @@ impl Default for ComplementaryConfig {
             accel_gate: 0.15,
             // 10 samples at 1 kHz.
             max_dt: 0.010,
+            mag: MagConfig::default(),
+            vertical: VerticalConfig::default(),
         }
     }
 }
@@ -87,6 +194,15 @@ pub struct ComplementaryFilter {
     /// Whether the most recent sample's accel passed the gate. Exposed for
     /// telemetry: a filter that never accepts accel is a gyro integrator.
     accel_used: bool,
+    /// Heading has been snapped to the magnetometer at least once.
+    heading_seeded: bool,
+    /// Field strength when heading was first referenced [µT].
+    mag_ref_ut: Option<f32>,
+    mag_rejected_run: u16,
+    last_mag_us: Option<u32>,
+    /// Seconds of IMU time since the last accepted magnetometer reading.
+    since_mag_s: f32,
+    vertical: VerticalFilter,
 }
 
 impl ComplementaryFilter {
@@ -96,7 +212,60 @@ impl ComplementaryFilter {
             q: Quat::IDENTITY,
             initialized: false,
             accel_used: false,
+            heading_seeded: false,
+            mag_ref_ut: None,
+            mag_rejected_run: 0,
+            last_mag_us: None,
+            since_mag_s: 0.0,
+            vertical: VerticalFilter::new(cfg.vertical),
         }
+    }
+
+    /// Heading is currently referenced to the magnetometer.
+    pub fn heading_referenced(&self) -> bool {
+        self.heading_seeded && self.since_mag_s <= self.cfg.mag.timeout_s
+    }
+
+    /// The vertical channel, for telemetry (learned bias, reference).
+    pub fn vertical(&self) -> &VerticalFilter {
+        &self.vertical
+    }
+
+    fn estimate(&self, sample: &ImuSample) -> StateEstimate {
+        StateEstimate {
+            attitude: self.q.to_euler(),
+            body_rates: sample.gyro,
+            timestamp_us: sample.timestamp_us,
+            heading_referenced: self.heading_referenced(),
+            vertical: self
+                .vertical
+                .state()
+                .map(|(altitude_m, climb_rate_mps)| VerticalState { altitude_m, climb_rate_mps }),
+        }
+    }
+
+    /// Strength gate. Returns whether a reading of strength `n` [µT] may be
+    /// fused, updating the reference as needed.
+    fn accept_strength(&mut self, n: f32) -> bool {
+        let m = &self.cfg.mag;
+        if !(m.min_field_ut..=m.max_field_ut).contains(&n) {
+            return false;
+        }
+        let Some(r) = self.mag_ref_ut else {
+            self.mag_ref_ut = Some(n);
+            return true;
+        };
+        if libm::fabsf(n / r - 1.0) <= m.strength_gate {
+            self.mag_rejected_run = 0;
+            return true;
+        }
+        self.mag_rejected_run = self.mag_rejected_run.saturating_add(1);
+        if self.mag_rejected_run >= m.reseed_after {
+            self.mag_ref_ut = Some(n);
+            self.mag_rejected_run = 0;
+            return true;
+        }
+        false
     }
 
     /// True once the filter has seen a usable accel reading and seeded its
@@ -172,18 +341,57 @@ impl AttitudeEstimator for ComplementaryFilter {
             if omega.iter().all(|w| w.is_finite()) {
                 self.q.integrate(omega, dt);
             }
+
+            // Vertical channel: specific force in the world frame, minus
+            // the 1 g that a vehicle at rest reads.
+            let a_up = self.q.body_to_ref(sample.accel)[2] - GRAVITY;
+            self.vertical.predict(a_up, dt);
+            self.since_mag_s += dt;
         }
 
-        StateEstimate {
-            attitude: self.q.to_euler(),
-            body_rates: sample.gyro,
-            timestamp_us: sample.timestamp_us,
+        self.estimate(sample)
+    }
+
+    fn update_mag(&mut self, mag: &MagSample) {
+        // Heading needs tilt to remove: no attitude, no heading.
+        if !self.initialized {
+            return;
         }
+        let m = self.cfg.mag.calibration.apply(mag.field_ut);
+        let n = libm::sqrtf(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+        if !n.is_finite() || !self.accept_strength(n) {
+            return;
+        }
+        // Tilt-compensated field. Near the magnetic poles (or with a badly
+        // wrong attitude) almost all of it is vertical and the horizontal
+        // bearing is noise.
+        let mw = self.q.body_to_ref(m);
+        if libm::sqrtf(mw[0] * mw[0] + mw[1] * mw[1]) < 0.1 * n {
+            return;
+        }
+        let err = -wrap_pi(libm::atan2f(mw[1], mw[0]) + self.cfg.mag.declination_rad);
+
+        let turn = if self.heading_seeded {
+            let dt = match self.last_mag_us {
+                Some(prev) => (mag.timestamp_us.wrapping_sub(prev) as f32 * 1e-6).clamp(0.0, 0.1),
+                None => 0.01,
+            };
+            self.cfg.mag.kp * err * dt
+        } else {
+            self.heading_seeded = true;
+            err
+        };
+        self.last_mag_us = Some(mag.timestamp_us);
+        self.since_mag_s = 0.0;
+        self.q = Quat::about_z(turn).mul(&self.q);
+        self.q.normalize();
+    }
+
+    fn update_baro(&mut self, baro: &BaroSample) {
+        self.vertical.correct(baro.pressure_pa, baro.timestamp_us);
     }
 
     fn reset(&mut self) {
-        self.q = Quat::IDENTITY;
-        self.initialized = false;
-        self.accel_used = false;
+        *self = Self::new(self.cfg);
     }
 }

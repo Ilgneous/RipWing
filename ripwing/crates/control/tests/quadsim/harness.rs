@@ -173,7 +173,7 @@ pub fn simulate(
         let est = StateEstimate {
             attitude: [x[0] as f32, x[1] as f32, x[2] as f32],
             body_rates: [x[3] as f32, x[4] as f32, x[5] as f32],
-            timestamp_us: 0,
+            ..Default::default()
         };
 
         // ---- code under test (f32, as on the F411) -----------------------

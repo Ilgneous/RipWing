@@ -22,6 +22,7 @@ fn healthy_inputs(now_us: u32) -> SafetyInputs {
             attitude: [0.0, 0.0, 0.0],
             body_rates: [0.0, 0.0, 0.0],
             timestamp_us: now_us, // perfectly fresh
+            ..Default::default()
         },
         last_rc_heartbeat_us: now_us, // fresh link
         battery_volts: 12.0,          // healthy 3S

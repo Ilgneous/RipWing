@@ -235,10 +235,3 @@ impl Bmp581 {
         Ok(())
     }
 }
-
-/// Pressure altitude (m) above the reference pressure `p0_pa` (the
-/// international barometric formula, standard atmosphere). For relative
-/// altitude, pass the pressure measured on the ground at arming as `p0_pa`.
-pub fn pressure_altitude_m(pressure_pa: f32, p0_pa: f32) -> f32 {
-    44_330.0 * (1.0 - libm::powf(pressure_pa / p0_pa, 1.0 / 5.255))
-}

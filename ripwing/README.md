@@ -87,18 +87,28 @@ Toolchain setup:
   the previous one. Transfers overlap computation. The safety monitor stays
   on SysTick so it can detect a dead sensor chain.
 - Estimation crate: quaternion complementary filter (τ = 1 s, accel norm
-  gate, seeded from accel at boot), 18 host tests. Yaw is gyro-only until
-  a magnetometer or the EKF.
+  gate, seeded from accel at boot) with the magnetometer and barometer
+  fused, 40 host tests.
+  - Heading: a tilt-compensated magnetometer correction about the world
+    vertical only (τ = 5 s), so the magnetometer can never disturb roll or
+    pitch. It snaps to the magnetometer once at boot and gates on field
+    strength. It applies declination and hard/soft-iron calibration, both
+    set in `board.rs`; calibration is not yet measured.
+  - Altitude: a third-order complementary filter of baro height and
+    world-frame vertical acceleration (τ = 2 s), which learns accel bias.
+    It reports height above the boot pressure and climb rate in
+    `StateEstimate::vertical`.
+  - Each output is withdrawn if its sensor stops for 0.5 s.
 - Sensors crate: BMI088 (IMU2), BMP581 baro and MMC5983MA mag drivers on
   embedded-hal 1.0, so they run on the F411 now and the H723 PCB later.
   Host tests run against register-level fakes of each chip. The firmware
   polls them at 500/50/100 Hz, on the PCB's SPI2 and I2C1 pins. Each one is
   optional at boot (probed by chip ID), and a sensor that keeps failing is
-  dropped. Readings are published and printed but not yet fused.
+  dropped. The magnetometer and barometer feed the estimator.
 - Next: bench-verify the IMU path on hardware and measure noise with motors
-  spinning; fuse the magnetometer (yaw) and barometer (altitude) into the
-  estimator; RC driver writing the attitude setpoint (and a rate/acro mode
-  that bypasses the outer loop); EKF.
+  spinning; magnetometer hard/soft-iron calibration of the assembled
+  airframe; RC driver writing the attitude setpoint, capturing the heading
+  at arming, and a rate/acro mode that bypasses the outer loop; EKF.
 
 ## Design notes
 

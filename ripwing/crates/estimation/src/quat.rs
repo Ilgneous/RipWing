@@ -64,6 +64,35 @@ impl Quat {
         ]
     }
 
+    /// Express a body-frame vector in the reference frame (`R · v`).
+    pub fn body_to_ref(&self, v: [f32; 3]) -> [f32; 3] {
+        let Self { w, x, y, z } = *self;
+        [
+            (1.0 - 2.0 * (y * y + z * z)) * v[0] + 2.0 * (x * y - w * z) * v[1] + 2.0 * (x * z + w * y) * v[2],
+            2.0 * (x * y + w * z) * v[0] + (1.0 - 2.0 * (x * x + z * z)) * v[1] + 2.0 * (y * z - w * x) * v[2],
+            2.0 * (x * z - w * y) * v[0] + 2.0 * (y * z + w * x) * v[1] + (1.0 - 2.0 * (x * x + y * y)) * v[2],
+        ]
+    }
+
+    /// Rotation by `angle` [rad] about the reference-frame z axis.
+    pub fn about_z(angle: f32) -> Self {
+        let (s, c) = (libm::sinf(angle * 0.5), libm::cosf(angle * 0.5));
+        Self { w: c, x: 0.0, y: 0.0, z: s }
+    }
+
+    /// Hamilton product `self ⊗ rhs`. For body-to-reference quaternions,
+    /// `Quat::about_z(a).mul(&q)` turns the estimate by `a` about the
+    /// world vertical, leaving roll and pitch as they were.
+    pub fn mul(&self, r: &Self) -> Self {
+        let Self { w, x, y, z } = *self;
+        Self {
+            w: w * r.w - x * r.x - y * r.y - z * r.z,
+            x: w * r.x + x * r.w + y * r.z - z * r.y,
+            y: w * r.y - x * r.z + y * r.w + z * r.x,
+            z: w * r.z + x * r.y - y * r.x + z * r.w,
+        }
+    }
+
     /// Advance by a body-frame angular rate `omega` [rad/s] over `dt` [s]:
     /// first-order integration of `q̇ = ½ q ⊗ (0, ω)`, then renormalize.
     ///
