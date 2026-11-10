@@ -7,8 +7,12 @@ Four experiments, each isolating one consequence:
   [C] Bank-angle restoring moment  -- the per-rotor asymmetry near the ground
   [D] Hover trim shift             -- throttle needed to hold height vs altitude
 
-Run:  python3 ground_effect_study.py
+Run from the RipWing repo root:
+    python -m QuadSim.models.ground_effect_study
+Writes results/figures/ground_effect_study.png.
 """
+
+from pathlib import Path
 
 import numpy as np
 import matplotlib
@@ -146,7 +150,9 @@ def main():
 
     fig.suptitle('Ground Effect: Model, Landing Impact, and Control Consequences',
                  fontsize=14, fontweight='bold')
-    fig.savefig('ground_effect_study.png', dpi=120, bbox_inches='tight')
+    out_file = Path(__file__).resolve().parents[1] / 'results/figures/ground_effect_study.png'
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_file, dpi=120, bbox_inches='tight')
 
     # ---------------- numeric summary ----------------
     print("[A] K_G at the ground (z=0):  "
@@ -171,7 +177,7 @@ def main():
     print(f"[D] hover trim at ground: {trim_rpm[0]:.0f} rpm vs "
           f"{oge_rpm:.0f} rpm free air "
           f"({100*(trim_rpm[0]-oge_rpm)/oge_rpm:+.1f}%)")
-    print("\nSaved ground_effect_study.png")
+    print(f"\nSaved {out_file}")
 
 
 if __name__ == '__main__':

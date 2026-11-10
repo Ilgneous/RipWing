@@ -106,10 +106,10 @@ and conservation of energy; the MIT notes state it directly as
 
 The drag (reaction) torque has the *same* ω² form for the same aerodynamic
 reason — it is the torque the airframe feels as a reaction to spinning the
-prop against air resistance. That is why `k_m` is ~50× smaller than `k_f`
+prop against air resistance. That is why `k_m` is ~80× smaller than `k_f`
 here: yaw authority is much weaker than thrust, which the test suite checks
 explicitly (`test_linearization_matches_nonlinear` shows the yaw column of B is
-~16× weaker than roll/pitch).
+~23× weaker than roll/pitch with the 7-inch prop).
 
 ### Why alternating spin directions
 `spin_dir = [-1, +1, -1, +1]`. Diagonal motors spin the same way; adjacent

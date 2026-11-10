@@ -18,9 +18,10 @@ DOF ACCOUNTING (why "10-DOF" and why 16 states)
 WHY BLADE FLAPPING IS QUASI-STATIC (not extra states)
 -----------------------------------------------------
 A flapping blade is a stiff pendulum spinning at rotor speed; its flap response
-settles within roughly one rotor revolution. At hover here (~15,600 rpm =
-260 rev/s) that is ~4 ms — two orders of magnitude faster than body dynamics
-(~0.1–1 s) and an order faster than the motor lag (50 ms). By timescale
+settles within roughly one rotor revolution. At hover here (~9,300 rpm =
+155 rev/s on the 7-inch prop) that is ~6 ms — well over an order of magnitude
+faster than body dynamics (~0.1–1 s) and ~5x faster than the motor lag
+(35 ms). By timescale
 separation the flap angles are treated as *algebraic functions of the flight
 state* rather than differential states. This is the standard treatment
 (Hoffmann et al. 2007; Mahony, Kumar & Corke 2012; Pounds et al. 2010).
@@ -49,8 +50,15 @@ NEW TERMS RELATIVE TO THE 6-DoF MODEL (QuadcopterPlant)
   flapping force   F_b     = -flap_coeff * T * [v_bx, v_by, 0]
   flapping moment  body_torque     = flap_moment_arm * (z_hat x F_b)
   rate damping     body_torque    += -rotor_rate_damp_coeff * [p, q, 0]
-  rotor gyroscopic body_torque    += -(body_rates x [0,0,rotor_angular_momentum_z]),  rotor_angular_momentum_z = rotor_inertia * sum(s_i w_i)
-  yaw reaction     torque_z  += -rotor_inertia * sum(s_i * w_i_dot)
+  rotor gyroscopic body_torque    += -(body_rates x [0,0,rotor_angular_momentum_z]),  rotor_angular_momentum_z = -rotor_inertia * sum(s_i w_i)
+  yaw reaction     torque_z  += +rotor_inertia * sum(s_i * w_i_dot)
+
+  Sign convention: s_i = spin_dir is the sign of rotor i's DRAG torque on the
+  airframe, so rotor i spins about -s_i * z_hat. Spinning a rotor up needs
+  extra motor torque along its spin, which reacts on the airframe in the same
+  direction as the extra drag: per rotor, torque_z = s_i (k_m w_i^2 +
+  J_r w_i_dot). (An earlier version had both rotor-inertia terms with the
+  opposite sign, so a yaw command first kicked the airframe the wrong way.)
 
 The 6-DoF model is recovered exactly by zeroing the new coefficients (this is
 enforced by a regression test), so everything already validated about the base
@@ -89,14 +97,18 @@ class QuadcopterPlant10DOF(QuadcopterPlant):
     N_STATES = 16
 
     def __init__(self,
-                 motor_time_constant=0.05,      # motor+ESC+prop time constant [s]
+                 motor_time_constant=0.035,     # motor+ESC+prop time constant [s]
+                                                #   (7" prop: lighter rotor than
+                                                #    the 50 ms 10" assumption)
                  flap_coeff=0.008,        # TPP tilt per airspeed [rad/(m/s)]
                  flap_moment_arm=0.05,         # effective flap moment arm [m]
                                       #   (rotor-plane height above CoM plus an
                                       #    equivalent arm for hub stiffness)
                  rotor_rate_damp_coeff=0.005,   # rotor rate damping [N m/(rad/s)]
-                 rotor_inertia=3.0e-5,      # rotor+prop spin inertia [kg m^2]
-                 rotor_radius=0.127,        # propeller radius [m] (~10 in prop)
+                 rotor_inertia=2.75e-5,     # rotor+prop spin inertia [kg m^2]
+                                            #   9 g 7" prop as a rod (m D^2/12)
+                                            #   + 15 g motor bell at r = 16 mm
+                 rotor_radius=0.0889,       # propeller radius [m] (7 in prop)
                  ground_effect_gain=0.30,   # C_a: max thrust surplus at z=0 [-]
                  ground_effect_decay=2.2,   # C_b: decay rate in z/R [-]
                  ground_effect_model='exponential',   # or 'cheeseman' / 'none'
@@ -221,15 +233,17 @@ class QuadcopterPlant10DOF(QuadcopterPlant):
 
         # --- rotor gyroscopics --------------------------------------------
         # Net rotor angular momentum about body z (cancels when CW/CCW pairs
-        # are balanced; appears during yaw commands).
-        rotor_angular_momentum_z = self.rotor_inertia * np.sum(self.spin_dir * rotor_speeds)
+        # are balanced; appears during yaw commands). Rotor i spins about
+        # -spin_dir[i] * z_hat, hence the minus sign.
+        rotor_angular_momentum_z = -self.rotor_inertia * np.sum(self.spin_dir * rotor_speeds)
         gyro_torque = -np.cross(body_rates, np.array([0.0, 0.0, rotor_angular_momentum_z]))
 
         # --- motor first-order lag ----------------------------------------
         motor_speeds_dot = (cmd - rotor_speeds) / self.motor_time_constant
-        # Reaction torque on the airframe from accelerating the rotors.
+        # Reaction torque on the airframe from accelerating the rotors: same
+        # sign as the drag torque the extra speed will produce.
         tau_react = np.array([0.0, 0.0,
-                              -self.rotor_inertia * np.sum(self.spin_dir * motor_speeds_dot)])
+                              self.rotor_inertia * np.sum(self.spin_dir * motor_speeds_dot)])
 
         tau_total = body_torque + flap_torque + rate_damp_torque + gyro_torque + tau_react
 

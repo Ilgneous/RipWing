@@ -219,18 +219,43 @@ class TestRateDampingAndGyro:
         with the rate-damping contribution subtracted.
         """
         s = hover16(plant)
-        # Imbalance rotors like a yaw command: CCW (+1 spin) up, CW down.
+        # Imbalance rotors like a yaw command: CW pair (spin_dir +1) up,
+        # CCW pair down.
         s[12] *= 0.95; s[14] *= 0.95
         s[13] *= 1.05; s[15] *= 1.05
         q = 1.5
         s[10] = q
         om = s[12:16]
-        rotor_angular_momentum_z = plant.rotor_inertia * np.sum(plant.spin_dir * om)
+        # Rotor i spins about -spin_dir[i] * z_hat.
+        rotor_angular_momentum_z = -plant.rotor_inertia * np.sum(plant.spin_dir * om)
         assert abs(rotor_angular_momentum_z) > 0.0
         cmd = om.copy()   # hold rotors where they are (no reaction torque)
         d = plant.derivatives(s, cmd)
         expected_p_dot = (-q * rotor_angular_momentum_z) / plant.Ixx     # damping acts on y, not x
         assert d[9] == pytest.approx(expected_p_dot, rel=1e-6)
+
+
+    def test_rotor_spin_up_yaws_same_way_as_its_drag(self, plant):
+        """
+        Regression for the yaw sign bug. Accelerating a rotor needs extra
+        motor torque along its spin; the airframe feels the reaction in the
+        SAME direction as the extra drag torque that rotor will make at the
+        higher speed. So a yaw command must yaw the airframe the commanded way
+        from the first instant, not kick it backwards.
+        """
+        s = hover16(plant)
+        w = s[12:16].copy()
+        cmd = w * (1.0 + 0.05 * plant.spin_dir)     # +yaw: s=+1 up, s=-1 down
+        d0 = plant.derivatives(s, cmd)               # instant of the command
+        assert d0[11] > 0.0, "yaw reaction opposes the commanded yaw"
+        # Closed form at the instant: drag unchanged (rotors not moved yet),
+        # reaction = J_r * sum(s_i * w_dot_i) / Izz.
+        w_dot = (cmd - w) / plant.motor_time_constant
+        expected = plant.rotor_inertia * np.sum(plant.spin_dir * w_dot) / plant.Izz
+        assert d0[11] == pytest.approx(expected, rel=1e-9)
+        # Once the rotors arrive, the drag torque pushes the same way.
+        s[12:16] = cmd
+        assert plant.derivatives(s, cmd)[11] > 0.0
 
 
 # ===========================================================================
@@ -249,8 +274,9 @@ class TestLinearizationStructure:
         A, B, xt, ut = plant.linearize()
         # Body rows (positions, velocities, angles, p and q rates): no feedthrough.
         np.testing.assert_allclose(B[0:11, :], np.zeros((11, 4)), atol=1e-8)
-        # Yaw row: exact reaction-torque feedthrough -rotor_inertia*s_i/(body_torque*Izz).
-        expected_yaw = -plant.rotor_inertia * plant.spin_dir / (plant.motor_time_constant * plant.Izz)
+        # Yaw row: exact reaction-torque feedthrough +rotor_inertia*s_i/(tau_m*Izz),
+        # same sign as the drag torque each command produces.
+        expected_yaw = plant.rotor_inertia * plant.spin_dir / (plant.motor_time_constant * plant.Izz)
         np.testing.assert_allclose(B[11, :], expected_yaw, rtol=1e-4)
         # Rotor rows.
         np.testing.assert_allclose(B[12:16, :], np.eye(4) / plant.motor_time_constant, rtol=1e-6)
@@ -341,8 +367,11 @@ class TestClosedLoopAndImprovement:
         drag from flapping dominates parasitic drag — the real reason a level
         quadcopter decelerates.
         """
+        # 'phi'/'theta' are the controller's attitude-override keys; with any
+        # other keys the position loop flies the vehicle back to x=0 and the
+        # test measures that braking instead of rotor drag.
         level_hold = lambda t: {'x': 0, 'y': 0, 'z': 5.0, 'yaw': 0,
-                                'roll': 0.0, 'pitch': 0.0}
+                                'phi': 0.0, 'theta': 0.0}
         # 10-DOF
         p10 = QuadcopterPlant10DOF()
         sim10 = Simulation10DOF(p10, CascadedPIDController(p10, ControlAllocator(p10)))

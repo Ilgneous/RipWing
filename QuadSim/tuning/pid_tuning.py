@@ -24,9 +24,15 @@ a real vehicle. Two stages, mirroring how real quads are tuned:
 Optimizer: Nelder-Mead over log10(gains) — gains are inherently positive and
 span decades, so log-space makes the simplex well-behaved.
 
-Outputs:
-  tuned_gains.json        the gain set to transplant into the controller
-  tuning_comparison.png   before/after step responses on the 10-DOF plant
+  STAGE 3 — YAW lives in tuning/yaw_tuning.py; run it after this script.
+      Re-running this script keeps the yaw gains already in tuned_gains.json.
+
+Outputs (under QuadSim/results/):
+  tuning_data/tuned_gains.json      the gain set to transplant into the controller
+  figures/tuning_comparison.png     before/after step responses on the 10-DOF plant
+
+Run from the RipWing repo root:
+    python -m QuadSim.tuning.pid_tuning
 
 NOTE ON TRANSFER TO FIRMWARE: these are continuous-signal gains evaluated at
 200 Hz. Keep the same loop rate on target, or re-verify after changing it, and
@@ -97,7 +103,12 @@ DEFAULTS = {
     'kp_rate': 0.040, 'ki_rate': 0.002, 'kd_rate': 0.0008,
     'kp_xy': 0.45, 'kd_xy': 0.85,
     'kp_z': 2.0, 'kd_z': 2.6,
+    # Yaw: the CascadedPIDController defaults. Tuned separately by
+    # tuning/yaw_tuning.py (stage 3), which writes these keys back.
+    'k_att_yaw': 3.0,
+    'kp_yaw': 0.060, 'ki_yaw': 0.004, 'kd_yaw': 0.0010,
 }
+YAW_KEYS = ('k_att_yaw', 'kp_yaw', 'ki_yaw', 'kd_yaw')
 
 def build_controller(plant, g):
     """Construct a controller with the given gain dict applied.
@@ -105,9 +116,9 @@ def build_controller(plant, g):
     Two hard-won realism fixes live here (found when noise was added):
 
     1. Yaw output limit must sit INSIDE the plant's physical yaw envelope.
-       Yaw authority is only ~±0.26 N·m over the entire motor range (k_m is
-       ~50x smaller than k_f); the original out_limit of 1.0 N·m let the
-       controller demand 4x more yaw torque than physically exists. The
+       Yaw authority is only ~±0.54 N·m over the entire motor range with the
+       7" prop (k_m is ~80x smaller than k_f); an out_limit of 1.0 N·m lets
+       the controller demand ~2x more yaw torque than physically exists. The
        allocator then "solves" for it by slamming the CW pair to zero and the
        CCW pair to max, destroying thrust/roll/pitch — a positive-feedback
        yaw ratchet. Real FCs desaturate/prioritize yaw last for this reason.
@@ -123,8 +134,12 @@ def build_controller(plant, g):
     for pid in (c.pid_x, c.pid_y):
         pid.kp, pid.kd = g['kp_xy'], g['kd_xy']
     c.pid_z.kp, c.pid_z.kd = g['kp_z'], g['kd_z']
+    c.k_att_yaw = g.get('k_att_yaw', DEFAULTS['k_att_yaw'])
+    c.pid_r.kp = g.get('kp_yaw', DEFAULTS['kp_yaw'])
+    c.pid_r.ki = g.get('ki_yaw', DEFAULTS['ki_yaw'])
+    c.pid_r.kd = g.get('kd_yaw', DEFAULTS['kd_yaw'])
     # Yaw: clamp inside physical authority (~half the full envelope), filter D.
-    yaw_authority = 2.0 * plant.k_m * plant.max_omega**2
+    yaw_authority = 2.0 * plant.drag_torque_coeff * plant.max_motor_speed**2
     c.pid_r.out_limit = 0.5 * yaw_authority
     c.pid_r.d_lpf_hz = 30.0
     return c
@@ -210,9 +225,9 @@ def attitude_cost(g, return_metrics=False):
     # ki earn its keep against the constant torque bias.
     steady_err = np.mean(np.abs(err[t >= 2.0]))
     # Motor thrash: noise amplified into the commands (punishes huge kd/kp).
-    cmd_rpm = sim.omega_hist * 60 / (2 * np.pi)
+    cmd_rpm = sim.motor_speed_hist * 60 / (2 * np.pi)
     thrash = np.std(cmd_rpm[ms] - cmd_rpm[ms].mean(axis=0))   # rpm
-    sat = np.mean(sim.omega_hist >= plant.max_omega - 1e-6)
+    sat = np.mean(sim.motor_speed_hist >= plant.max_motor_speed - 1e-6)
     # Yaw wander: the 10-DOF yaw-reaction feedthrough (-J_r * sum s_i domega_i)
     # turns noisy motor commands into yaw torque noise. Penalize so the tuner
     # doesn't accept gains whose transients slosh yaw around.
@@ -246,7 +261,7 @@ def position_cost(g, return_metrics=False):
     tilt_pen = max(0.0, np.degrees(tilt_pk) - 25.0) * 0.2    # discourage >25 deg
     # Motor thrash penalty (punishes noise-amplifying derivative gains).
     ms = t >= 4.0
-    cmd_rpm = sim.omega_hist * 60 / (2 * np.pi)
+    cmd_rpm = sim.motor_speed_hist * 60 / (2 * np.pi)
     thrash = np.std(cmd_rpm[ms] - cmd_rpm[ms].mean(axis=0))
     cost = itae_x + 2.0 * itae_z + 6.0 * overshoot + tilt_pen + 0.01 * thrash
     if return_metrics:
@@ -290,12 +305,20 @@ def optimize_stage(cost_fn, base_gains, keys, maxfev=120):
     return tuned, res
 
 
+QUADSIM = Path(__file__).resolve().parents[1]
+
+
 def main():
-    rng_report = {}
+    data_dir = QUADSIM / 'results/tuning_data'
+    json_file = data_dir / 'tuned_gains.json'
+    # Keep a previous stage-3 yaw tune: these stages do not touch yaw.
+    prev = json.loads(json_file.read_text()) if json_file.exists() else {}
+    prev_yaw = {k: v for k, v in prev.get('tuned', {}).items() if k in YAW_KEYS}
+    base = {**DEFAULTS, **prev_yaw}
 
     print("=== STAGE 1: inner loop (attitude + rate) ===")
-    before1 = attitude_cost(DEFAULTS, return_metrics=True)
-    g1, res1 = optimize_stage(attitude_cost, DEFAULTS,
+    before1 = attitude_cost(base, return_metrics=True)
+    g1, res1 = optimize_stage(attitude_cost, base,
                               ['k_att', 'kp_rate', 'ki_rate', 'kd_rate'])
     after1 = attitude_cost(g1, return_metrics=True)
     print(f"  evaluations: {res1.nfev}")
@@ -318,15 +341,14 @@ def main():
           f"ovs {before2['overshoot_pct']:.1f}->{after2['overshoot_pct']:.1f}% | "
           f"cost {before2['cost']:.3f}->{after2['cost']:.3f}")
 
-    data_dir = Path('results/tuning_data')
     data_dir.mkdir(parents=True, exist_ok=True)
-    json_file = data_dir / 'tuned_gains.json'
-
+    out = {'defaults': DEFAULTS, 'tuned': g2,
+           'stage1_metrics': {'before': before1, 'after': after1},
+           'stage2_metrics': {'before': before2, 'after': after2}}
+    if prev_yaw and 'stage3_yaw_metrics' in prev:
+        out['stage3_yaw_metrics'] = prev['stage3_yaw_metrics']
     with open(json_file, 'w') as f:
-        json.dump({'defaults': DEFAULTS, 'tuned': g2,
-                   'stage1_metrics': {'before': before1, 'after': after1},
-                   'stage2_metrics': {'before': before2, 'after': after2}},
-                  f, indent=2, default=float) #[cite: 2]
+        json.dump(out, f, indent=2, default=float)
     print(f"\nSaved {json_file}")
 
     # ------------------ before/after figure -----------------------------
@@ -354,10 +376,9 @@ def main():
     fig.suptitle('PID tuning on the 10-DOF model: before vs after',
                  fontweight='bold')
     fig.tight_layout()
-    fig_dir = Path('results/figures/10dof')
+    fig_dir = QUADSIM / 'results/figures'
     fig_dir.mkdir(parents=True, exist_ok=True)
     fig_file = fig_dir / 'tuning_comparison.png'
-    
     fig.savefig(fig_file, dpi=120, bbox_inches='tight')
     print(f"Saved {fig_file}")
 

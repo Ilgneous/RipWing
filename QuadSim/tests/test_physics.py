@@ -52,7 +52,7 @@ def plant():
 
 # Standard hover input: all four motors at the gravity-cancelling speed.
 def hover_omegas(plant):
-    return np.full(4, plant.omega_hover)
+    return np.full(4, plant.hover_motor_speed)
 
 
 # ===========================================================================
@@ -271,7 +271,7 @@ class TestIntegratorAndEnergy:
         the integrated trajectory to the closed-form solution z = z0 + v0 t -
         0.5 g t^2 (ignoring drag is invalid here, so disable it).
         """
-        p = QuadcopterPlant(drag_lin=0.0)  # remove drag for clean kinematics
+        p = QuadcopterPlant(linear_drag_coeff=0.0)  # remove drag for clean kinematics
         state = np.zeros(12)
         state[2] = 100.0   # start high
         state[5] = 5.0     # initial upward velocity
@@ -289,7 +289,7 @@ class TestIntegratorAndEnergy:
         energy (kinetic + potential) must be conserved. RK4 should hold this to
         a tight tolerance over the horizon.
         """
-        p = QuadcopterPlant(drag_lin=0.0)
+        p = QuadcopterPlant(linear_drag_coeff=0.0)
         state = np.zeros(12)
         state[2] = 50.0
         state[3] = 4.0    # some horizontal velocity
@@ -376,7 +376,7 @@ class TestClosedLoop:
         """
         from QuadSim.models.quad_sim import step_maneuver
         sim = self._run(step_maneuver)
-        assert np.all(sim.omega_hist <= plant_max_omega()), \
+        assert np.all(sim.motor_speed_hist <= plant_max_omega()), \
             "motors should not saturate on a gentle maneuver"
 
     def test_x_translation_requires_pitch(self):
@@ -406,7 +406,7 @@ class TestClosedLoop:
 
 def plant_max_omega():
     """Helper for the saturation test (module-level so it's picklable)."""
-    return QuadcopterPlant().max_omega
+    return QuadcopterPlant().max_motor_speed
 
 
 if __name__ == '__main__':

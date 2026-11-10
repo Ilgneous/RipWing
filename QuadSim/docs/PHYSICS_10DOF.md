@@ -4,8 +4,13 @@ Companion to `PHYSICS_AND_DESIGN.md` (which covers the 6-DoF base model).
 This document covers what was *added* in `quad_sim_10dof.py`, how each addition
 was verified (`test_physics_10dof.py`), what the extra fidelity actually buys
 (`compare_models.py` → `model_comparison.png`), and how the model is used to
-tune the PID loops (`pid_tuning.py` → `tuned_gains.json`,
-`tuning_comparison.png`).
+tune the PID loops (`pid_tuning.py` and `yaw_tuning.py` → `tuned_gains.json`,
+`tuning_comparison.png`, `yaw_tuning.png`).
+
+> **7-inch prop + rotor-inertia sign fix.** The model now uses 7-inch
+> propeller coefficients (see `QuadcopterPlant` docstring) and the corrected
+> rotor reaction/gyroscopic signs (§2). Every figure and number in §4–§6 is
+> regenerated for this model. All figures are written to `results/figures/`.
 
 ---
 
@@ -25,7 +30,7 @@ reality the ESC + motor + prop is a lag: the prop has inertia, and the ESC
 takes finite time to change its speed. This is modeled as
 
 ```
-ω̇ᵢ = (ω_cmd,ᵢ − ωᵢ) / τ_m          τ_m = 50 ms
+ω̇ᵢ = (ω_cmd,ᵢ − ωᵢ) / τ_m          τ_m = 35 ms
 ```
 
 Everything downstream (thrust, torque, flapping) now uses the *actual* rotor
@@ -49,7 +54,7 @@ Two consequences for the airframe:
    `τ_flap = h · (ẑ × F_flap)`.
 
 This is modeled **quasi-statically**: flapping dynamics settle within about
-one rotor revolution (~4 ms at 260 rev/s), which is far faster than the body
+one rotor revolution (~6 ms at 155 rev/s, 7-inch prop at hover), which is far faster than the body
 dynamics (~100 ms) — a textbook timescale separation. The literature does the
 same for control-oriented models: Mahony, Kumar & Corke (2012) give exactly
 this quasi-static formulation; Hoffmann et al. (2007) measured the effect on
@@ -61,15 +66,22 @@ structural analysis, not vehicle control.
 Two smaller rotor effects are included with the same quasi-static logic:
 
 - **Rotor gyroscopics**: the spinning rotors carry net angular momentum
-  `H_z = J_r Σ sᵢωᵢ`; body rotation produces `τ = −ω × [0,0,H_z]`.
-- **Yaw reaction from rotor acceleration**: `τ_z += −J_r Σ sᵢ·ω̇ᵢ` — spinning
-  a prop up torques the airframe the other way. With motor lag this becomes a
-  *feedthrough* from commands to yaw, which matters (see §6, the yaw story).
+  `H_z = −J_r Σ sᵢωᵢ`; body rotation produces `τ = −ω × [0,0,H_z]`.
+- **Yaw reaction from rotor acceleration**: `τ_z += +J_r Σ sᵢ·ω̇ᵢ` — spinning
+  a prop up takes extra motor torque along its spin, which reacts on the
+  airframe the same way as the extra drag it will produce. With motor lag
+  this becomes a *feedthrough* from commands to yaw (see §6, the yaw story).
+
+  Sign convention: `sᵢ` (`spin_dir`) is the sign of rotor i's drag torque on
+  the airframe, so the rotor spins about `−sᵢ·ẑ` — hence the minus in `H_z`.
+  An earlier version had both rotor-inertia terms with the opposite sign,
+  which made every yaw command kick the airframe the wrong way first
+  (`test_rotor_spin_up_yaws_same_way_as_its_drag` guards it).
 - **Rotor rate damping**: `τ −= k_damp·[p,q,0]`, the aerodynamic damping a
   rotor disk presents to body rotation.
 
-Parameters (`tau_motor=0.05 s`, `k_flap=0.008 rad/(m/s)`, `h=0.05 m`,
-`J_r=3·10⁻⁵ kg·m²`) are **representative values from the literature ranges,
+Parameters (`tau_motor=0.035 s`, `k_flap=0.008 rad/(m/s)`, `h=0.05 m`,
+`J_r=2.75·10⁻⁵ kg·m²`, 7-inch prop) are **representative values from the literature ranges,
 not identified from your airframe**. Before trusting tuned gains on hardware:
 identify `τ_m` from a bench step response of one motor+prop (log ESC telemetry
 or a tachometer), and `k_flap` from the deceleration of a coast-down glide.
@@ -138,9 +150,15 @@ meaningless.
 | Panel | Measurement | Result |
 |---|---|---|
 | A | K_G vs z/R | 1.30 at the ground, 1.033 at one rotor radius, finite everywhere (Cheeseman-Bennett gives 2.04 even clamped) |
-| B | 0.15 m/s precision landing | touchdown delayed **1.50 s**; impact speed cut from 0.159 to 0.034 m/s (−79%) |
-| C | Roll accel vs bank angle near ground | −325 °/s² at 10° bank at 2 cm altitude: a strong restoring moment that vanishes by 0.5 m |
-| D | Hover trim vs altitude | 4.9% less throttle needed at the ground (14,852 vs 15,620 rpm) |
+| B | 0.15 m/s precision landing | touchdown delayed **0.85 s**; impact speed cut from 0.159 to 0.007 m/s (−96%) |
+| C | Roll accel vs bank angle near ground | −267 °/s² at 10° bank at 2 cm altitude: a strong restoring moment that vanishes by 0.5 m |
+| D | Hover trim vs altitude | 3.2% less rotor speed needed at the ground (9,003 vs 9,304 rpm) |
+
+With the 7" prop (R = 89 mm, against 127 mm before) the rotors sit higher
+above the ground in rotor radii at any given altitude, so ground effect fades
+closer to the pad. The float is shorter (0.85 s against 1.50 s) and the
+self-leveling moment is weaker.
+
 
 Panel B is the answer to the original question: on a *gentle* descent the
 vehicle floats and refuses to settle. An aggressive descent partly hides the
@@ -173,8 +191,8 @@ precision for impact energy.
 | Motor lag | `QuadcopterPlant10DOF.derivatives`: rotor block `(cmd−ω)/τ` |
 | Flapping force | `−k_flap·T·[v_bx, v_by, 0]` added to body forces |
 | Flapping moment | `h_flap · (ẑ × F_flap)` added to torques |
-| Rotor gyroscopics | `−ω × [0,0,H_z]`, `H_z = J_r Σ sᵢωᵢ` |
-| Yaw reaction | `−J_r Σ sᵢω̇ᵢ` on τ_z |
+| Rotor gyroscopics | `−ω × [0,0,H_z]`, `H_z = −J_r Σ sᵢωᵢ` |
+| Yaw reaction | `+J_r Σ sᵢω̇ᵢ` on τ_z |
 | Rate damping | `−k_damp·[p,q,0]` |
 | Ground effect (per rotor) | `rotor_heights()`, `ground_effect_ratio()`, applied to `per_rotor_thrust` in `derivatives` |
 | Ground contact | `Simulation10DOF(enforce_ground=True)` |
@@ -199,7 +217,7 @@ Same bottom-up philosophy as the 6-DoF suite: analytical facts first.
   (e.g. ṗ = −q·H_z/Ixx).
 - **Linearization structure**: B-matrix body rows ≈ 0 (commands act through
   the rotor states now), rotor rows = I/τ, and the yaw feedthrough term
-  −J_r·sᵢ/(τ·Izz) present with the right sign.
+  +J_r·sᵢ/(τ·Izz) present with the right sign (same as the drag torque).
 - **Controllability**: the naive Kalman rank test *fails numerically* (the
   16-state system spans ~16 orders of magnitude); the PBH test passes at
   every eigenvalue. Kept both in the test as a documented lesson.
@@ -221,20 +239,29 @@ once IGE exists. The fix was to move all free-air reference states (and the
 default `linearize()` trim) to 5 m, which is the physically honest reading of
 "hover trim".
 
-Both suites: **51/51 passing** (24 legacy 6-DoF + 27 ten-DOF).
+Both suites: **52/52 passing** (24 legacy 6-DoF + 28 ten-DOF).
 
 ## 5. What the fidelity buys (compare_models.py → model_comparison.png)
 
 | Panel | Experiment | 6-DoF | 10-DOF | Meaning |
 |---|---|---|---|---|
-| A | Velocity decay, level hold, v₀=4 m/s | no decay (>4 s) | half-life 2.33 s | Flapping is the dominant horizontal damping; the 6-DoF drone coasts forever |
-| B | Roll step, commanded vs actual rotor speed | identical | 1659 rpm peak gap | Motor lag is a real actuator, not a wire |
-| C | Rate-loop gain sweep ×1…×48 | ripple flat at 0.08°/s | 5.36°/s limit-cycle "buzz" at ×48 | The motor pole caps usable gain; 6-DoF rewards infinite gain |
+| A | Velocity decay, level hold, v₀=4 m/s | half-life > 4 s (4 → 2.9 m/s) | half-life 2.33 s | Flapping is the dominant horizontal damping; the 6-DoF drone barely slows |
+| B | Roll step, commanded vs actual rotor speed | identical | 988 rpm peak gap | Motor lag is a real actuator, not a wire |
+| C | Rate-loop gain sweep ×1…×192 | limit cycle from ×128 | limit cycle from ×88 | The motor pole lowers the usable gain ceiling ~1.5× below what the 6-DoF model allows |
 | D | Steady 1.5 m/s cruise | 0.76° pitch | 1.61° pitch | ~2× tilt needed to overcome flapping drag — trim attitude predictions differ materially |
 
 Panel C is the punchline for tuning: **gains tuned on the 6-DoF model are
 untrustworthy precisely in the direction tuning pushes them** (higher), because
 the 6-DoF plant hides the actuator pole that turns high gain into oscillation.
+In the 6-DoF model only the 200 Hz sample rate sets a ceiling (×128). The
+10-DOF motor pole brings the buzz down to ×88. Ripple is measured once the
+step has settled (t > 2 s of a 3 s run).
+
+The margin is smaller than with the earlier 10" parameters. Then the 50 ms
+motor lag caused a 5.4°/s buzz by ×48, while the 6-DoF ripple stayed flat
+at 0.08°/s. The 7" motor's 35 ms lag sits further from the loop crossover.
+The tuned rate gain is ×9.4 (kp 0.374), about 9× below the 10-DOF buzz
+onset, so it has wide margin on either model.
 
 ## 6. PID tuning on the 10-DOF plant (pid_tuning.py)
 
@@ -253,8 +280,9 @@ lesson:
 2. **A constant torque bias (0.02 N·m, shifted-battery style) gives the
    integral term a job** — otherwise ki is unidentifiable.
 3. **Yaw demands must be capped inside the physical yaw envelope.** Yaw
-   authority is only ±0.26 N·m over the *entire* motor range (k_m ≪ k_f).
-   The original `out_limit=1.0` let the controller demand 4× the physics;
+   authority is only ±0.26 N·m over the *entire* motor range (k_m ≪ k_f;
+   ±0.54 N·m with the current 7-inch prop parameters). The original
+   `out_limit=1.0` let the controller demand 4× the physics;
    the allocator "solved" it by slamming the CW pair to zero and the CCW
    pair to max, destroying roll/pitch/thrust — a positive-feedback yaw
    ratchet that noise reliably triggered (39% of commands clipped at zero).
@@ -269,38 +297,102 @@ tilt means indefinite lateral acceleration, and by ~2.5 s the vehicle slides
 fast enough that flapping moments dominate and the test stops measuring the
 attitude loop. Doublets are the standard flight-test input for this reason.
 
-A residual behavior worth knowing: during aggressive transients, yaw wanders
-tens of degrees. That is real 10-DOF physics — the yaw-reaction feedthrough
-(−J_r Σ sᵢω̇ᵢ) converts noisy motor commands into yaw torque noise comparable
-to the capped yaw authority ("yaw washout" on small quads). A small yaw
-penalty in the cost keeps the optimizer from exploiting it.
+Yaw during the roll doublet: an earlier version of this section reported
+yaw wandering tens of degrees and attributed it to the yaw-reaction
+feedthrough. That wander came from the rotor-inertia sign bug (§2), which
+turned every yaw correction into a kick the wrong way. With the sign fixed,
+the noisy tuning scenario peaks at ~0.07° of yaw. The feedthrough
+(+J_r Σ sᵢω̇ᵢ) still exists and still turns motor-command noise into yaw
+torque, so the small yaw penalty in the cost stays.
 
-### Results
+### Results (stages 1–2)
+
+7-inch prop, rotor-inertia sign fixed (see the note at the top):
 
 | | default | tuned |
 |---|---|---|
-| kp_rate | 0.040 | 0.567 |
-| ki_rate | 0.002 | ~0 (2e-5) |
-| kd_rate | 0.0008 | 0.00015 |
-| k_att | 8.0 | 5.59 |
-| kp_xy / kd_xy | 0.45 / 0.85 | 0.55 / 0.95 |
-| kp_z / kd_z | 2.0 / 2.6 | 3.58 / 2.85 |
-| **doublet overshoot** | **58%** | **1.1%** |
-| **rate ripple** | **20.5°/s** | **1.1°/s** |
-| rise time | 0.28 s | 0.33 s |
+| kp_rate | 0.040 | 0.374 |
+| ki_rate | 0.002 | 0.575 |
+| kd_rate | 0.0008 | ~0 (1e-5) |
+| k_att | 8.0 | 8.05 |
+| kp_xy / kd_xy | 0.45 / 0.85 | 2.37 / 2.26 |
+| kp_z / kd_z | 2.0 / 2.6 | 3.60 / 1.31 |
+| **doublet overshoot** | **56%** | **0.8%** |
+| **rate ripple** | **8.6°/s** | **1.3°/s** |
+| rise time | 0.27 s | 0.11 s |
+| steady error after doublet | 2.3° | 0.07° |
+| 2 m position-step rise | 2.97 s | 1.34 s |
 
-The optimizer's choices are physically interpretable: with high rate
-stiffness, the torque bias is rejected through a 0.36° attitude offset, so
-`ki_rate → 0`; with noise priced in, `kd_rate` *shrinks* rather than exploding.
-Cross-seed validation (5 unseen noise realizations): ITAE improves 7–8×
-consistently (16.6–18.7 → 2.2–2.4 deg·s) — the gains are not overfit to one
+Interpretation: with noise priced in, `kd_rate` is driven to ~0 — at 200 Hz
+the D term buys less damping than it costs in motor thrash, and the motor
+pole plus rotor rate damping supply the rest. This time the optimizer kept a
+real integrator (`ki_rate = 0.575`), so the shifted-CoM torque bias is
+rejected to a 0.02° offset (noise-free) rather than carried as a standing
+attitude error. Both Nelder-Mead stages stopped at the 120-evaluation budget
+rather than on tolerance, so this is the best point found, not a proven
+optimum. Cross-seed validation (5 unseen noise realizations): ITAE improves
+~5.6× consistently (11.1 → 1.9–2.0 deg·s) — the gains are not overfit to one
 noise draw.
+
+### Stage 3: yaw (yaw_tuning.py)
+
+Yaw is a different plant. Its torque comes from rotor drag, so authority
+is about 25× weaker than roll/pitch (±0.54 N·m, and the controller is
+capped at half of that). It also has a direct feedthrough: the rotor-reaction
+torque J_r Σ sᵢω̇ᵢ turns every motor-command change into a yaw kick. Tuning yaw
+together with roll/pitch would let the optimizer trade one axis against the
+other through that coupling. So yaw is tuned on its own, after stages 1–2,
+with everything else frozen at the tuned gains.
+
+- **Tuned:** `k_att_yaw` (heading P) and `kp/ki/kd_yaw` (yaw-rate PID).
+- **Scenario:** a 30° heading doublet (0 → 30° at 0.3 s, back at 2.0 s)
+  while holding position. It uses the same sensor noise as stages 1–2, plus
+  a constant **0.01 N·m yaw torque bias**, about one motor tilted 1°. The bias
+  is what makes the integrator identifiable.
+- **Cost:** ITAE of heading error, timed from the latest step,
+  + overshoot + steady error + yaw-rate ripple + motor thrash + saturation
+  + roll/pitch coupling.
+
+**Two starts.** The cost is nearly flat in `ki_yaw`. Started from the
+defaults, the log-space simplex walks `ki` down that flat direction to ~0. It
+then makes up for it with a very high heading gain (k_att 23), which leaves
+the bias as a 0.45° standing error (cost 8.41). A second start with a real
+integrator converges to a much better basin (cost 4.05), and the script
+keeps the lower result. Both runs converged on tolerance (255 and 449
+evaluations).
+
+| | default | tuned |
+|---|---|---|
+| k_att_yaw | 3.0 | 9.17 |
+| kp_yaw | 0.060 | 0.0252 |
+| ki_yaw | 0.004 | 1.77 |
+| kd_yaw | 0.0010 | ~0 |
+| rise (10–90%) | 0.63 s | 0.125 s |
+| overshoot | 17.9% | 0.2% |
+| steady heading error (with bias) | 3.8° | 0.10° |
+| yaw-rate ripple | 8.2°/s | 1.3°/s |
+| motor thrash | 254 rpm | 250 rpm |
+| cost, unseen seeds 1–5 | 27.2 ± 0.1 | 3.92 ± 0.04 |
+
+The tuned yaw loop is integral-dominated: its zero is at ki/kp ≈ 70 rad/s,
+the rate loop is effectively PI, and D is again driven to zero. The default
+gains could not hold heading against the bias (the integrator is capped at
+0.5 rad·s, so ki = 0.004 supplies at most 0.002 N·m). They overshot to
+35° and were still 5° out when the setpoint stepped back at 2.0 s. Roll/pitch coupling is unchanged (0.26° mean |tilt| against
+0.22° on the default gains).
 
 ## 7. Transfer to firmware
 
 - The tuned gains assume a 200 Hz control loop and *these* plant parameters.
   Re-identify `τ_m` and `k_flap` for your airframe first (§2), re-run
-  `pid_tuning.py`, and expect the ratios (not the absolute numbers) to carry.
+  `pid_tuning.py` then `yaw_tuning.py`, and expect the ratios (not the
+  absolute numbers) to carry.
+- The firmware flies these gains: `ripwing/crates/control/src/gains.rs`
+  holds them converted to mixer units for the 1 kHz loop. The control
+  crate's QuadSim tests check that they reproduce the Python step responses
+  at 1 kHz on all three axes. `quadsim_firmware_gains.rs` fails if the
+  constants drift from `tuned_gains.json` (via
+  `python -m QuadSim.analysis.export_step_references`).
 - For the LQR path: `linearize()` returns continuous A(16×16)/B(16×4);
   discretize at your control rate with `scipy.signal.cont2discrete` before
   computing the discrete LQR gain.

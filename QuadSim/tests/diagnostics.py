@@ -84,7 +84,7 @@ def panel(fig, gs_cell, t, S, O, plant, title, mode='full'):
 
 def main():
     plant = QuadcopterPlant()
-    hover = plant.omega_hover
+    hover = plant.hover_motor_speed
 
     fig = plt.figure(figsize=(16, 22))
     gs = gridspec.GridSpec(5, 1, figure=fig, hspace=0.55)
@@ -128,7 +128,7 @@ def main():
         return {'x': x, 'y': y, 'z': z, 'yaw': 0.0}
 
     sim.run(20.0, square_path)
-    panel(fig, gs[3], sim.t_hist, sim.state_hist, sim.omega_hist, plant,
+    panel(fig, gs[3], sim.t_hist, sim.state_hist, sim.motor_speed_hist, plant,
           "4. Closed-loop square  →  EXPECT: box XY path, alternating roll/pitch, motors working")
 
     # ---- Scenario 5: disturbance rejection ----
@@ -141,7 +141,7 @@ def main():
     x0[6] = np.radians(25.0)       # kicked 25 deg roll
     x0[1] = 1.5                    # and displaced in y
     sim2.run(8.0, lambda t: {'x': 0, 'y': 0, 'z': 5.0, 'yaw': 0}, x0=x0)
-    panel(fig, gs[4], sim2.t_hist, sim2.state_hist, sim2.omega_hist, plant,
+    panel(fig, gs[4], sim2.t_hist, sim2.state_hist, sim2.motor_speed_hist, plant,
           "5. Disturbance recovery  →  EXPECT: roll returns to 0, position recovers, decaying transient")
 
     fig.suptitle("Quadcopter Physics Diagnostics — each row has a KNOWN expected signature",

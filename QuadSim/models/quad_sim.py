@@ -22,9 +22,10 @@ Frame conventions
 - Body frame:  x forward, y left, z up (FLU). Thrust is along +body-z.
 - Euler angles use the ZYX (yaw-pitch-roll) intrinsic rotation sequence.
 - Motors are in an "X" configuration, numbered:
-      M0 front-right (CW)     M1 front-left (CCW)
-      M3 rear-right  (CCW)    M2 rear-left  (CW)
-  Spin directions alternate so net reaction torque cancels in hover.
+      M0 front-right (CCW)    M1 front-left (CW)
+      M3 rear-right  (CW)     M2 rear-left  (CCW)
+  (CW/CCW as seen from above.) Spin directions alternate so net reaction
+  torque cancels in hover.
 
 Units are SI throughout.
 """
@@ -51,15 +52,24 @@ class QuadcopterPlant:
     The plant integrates its own state with an internal RK4 step, and also
     exposes `derivatives()` so an external integrator (e.g. solve_ivp) can be
     used instead.
+
+    Propeller: 7-inch (D = 0.1778 m). The rotor coefficients come from the
+    standard nondimensional prop model with representative 7-inch values
+    (two-blade ~7x3.5-4 pitch; C_T ~ 0.10, C_P ~ 0.045, sea-level rho):
+        k_f = C_T * rho * D^4 / (2 pi)^2     T = k_f * omega^2
+        k_m = C_P * rho * D^5 / (2 pi)^3     Q = k_m * omega^2
+    giving hover at ~9,300 rpm and ~2.2 kgf per motor at max_rpm (T/W ~7).
+    Replace C_T / C_P with your prop's measured values (thrust-stand data or
+    the manufacturer's table) before trusting absolute numbers.
     """
 
     def __init__(self,
                  mass=1.2,                 # total mass [kg]
                  arm_length=0.225,         # motor distance from center [m]
                  Ixx=0.0123, Iyy=0.0123, Izz=0.0224,  # diagonal inertia [kg m^2]
-                 k_f=1.1e-6,               # thrust coefficient [N / (rad/s)^2]
-                 k_m=1.9e-8,               # drag-torque coefficient [N m / (rad/s)^2]
-                 drag_lin=0.10,            # translational aero drag [N / (m/s)]
+                 thrust_coeff=3.10e-6,     # thrust coefficient [N / (rad/s)^2] (7" prop)
+                 drag_torque_coeff=3.95e-8, # drag-torque coefficient [N m / (rad/s)^2] (7" prop)
+                 linear_drag_coeff=0.10,   # translational aero drag [N / (m/s)]
                  g=9.81,                   # gravity [m/s^2]
                  max_rpm=25000.0):         # actuator saturation limit [rpm]
         # --- mass / inertia ---
@@ -70,14 +80,14 @@ class QuadcopterPlant:
         self.Ixx, self.Iyy, self.Izz = Ixx, Iyy, Izz
 
         # --- aerodynamics ---
-        self.k_f = k_f
-        self.k_m = k_m
-        self.drag_lin = drag_lin
+        self.thrust_coeff = thrust_coeff
+        self.drag_torque_coeff = drag_torque_coeff
+        self.linear_drag_coeff = linear_drag_coeff
         self.g = g
 
         # --- actuator limits ---
         self.max_rpm = max_rpm
-        self.max_omega = max_rpm * 2.0 * np.pi / 60.0   # rad/s
+        self.max_motor_speed = max_rpm * 2.0 * np.pi / 60.0   # rad/s
 
         # Motor geometry for the "X" frame. Columns are motors 0..3.
         # Each motor's position in the body x-y plane (z=0).
@@ -89,13 +99,17 @@ class QuadcopterPlant:
             [-d,  d, 0.0],   # M2 rear-left
             [-d, -d, 0.0],   # M3 rear-right
         ])
-        # Spin direction of each motor (+1 = CCW about +z, produces -z reaction
-        # torque on the airframe; we track the reaction torque sign here).
+        # Sign of each rotor's drag-reaction torque on the airframe about +z.
+        # The airframe is pushed opposite to the prop's spin, so s_i = +1 is
+        # a CW prop (spinning about -z, seen from above) and s_i = -1 a CCW
+        # prop. Every rotor term must use this one convention: drag torque
+        # +s_i k_m w_i^2, acceleration reaction +s_i J_r w_i_dot, and rotor
+        # angular momentum -s_i J_r w_i (see QuadcopterPlant10DOF).
         # Alternating signs so hover yaw torque cancels.
         self.spin_dir = np.array([-1.0, +1.0, -1.0, +1.0])
 
         # Hover speed (each motor) for convenience / controller feed-forward.
-        self.omega_hover = np.sqrt(self.m * self.g / (4.0 * self.k_f))
+        self.hover_motor_speed = np.sqrt(self.m * self.g / (4.0 * self.thrust_coeff))
 
     # ----------------------------------------------------------------------
     #  Kinematics helpers
@@ -143,9 +157,9 @@ class QuadcopterPlant:
             total_thrust : scalar thrust along +body z [N]
             body_torque  : (3,) torque vector in the body frame [N m]
         """
-        omegas = np.clip(omegas, 0.0, self.max_omega)
-        f = self.k_f * omegas**2          # per-motor thrust [N]
-        tau_drag = self.k_m * omegas**2   # per-motor yaw drag torque [N m]
+        omegas = np.clip(omegas, 0.0, self.max_motor_speed)
+        f = self.thrust_coeff * omegas**2          # per-motor thrust [N]
+        tau_drag = self.drag_torque_coeff * omegas**2   # per-motor yaw drag torque [N m]
 
         total_thrust = np.sum(f)
 
@@ -191,7 +205,7 @@ class QuadcopterPlant:
         # Thrust is along +body z; rotate into world frame.
         thrust_world = R @ np.array([0.0, 0.0, thrust])
         gravity = np.array([0.0, 0.0, -self.m * self.g])
-        drag = -self.drag_lin * vel        # simple linear translational drag
+        drag = -self.linear_drag_coeff * vel        # simple linear translational drag
 
         accel = (thrust_world + gravity + drag) / self.m   # world-frame accel
 
@@ -259,7 +273,7 @@ class QuadcopterPlant:
         state_trim : (12,) trim state. Defaults to hover at the origin
                      (all zeros), i.e. level attitude, zero velocity/rates.
         omega_trim : (4,)  trim motor speeds. Defaults to the four-motor hover
-                     speed `omega_hover` that exactly cancels gravity.
+                     speed `hover_motor_speed` that exactly cancels gravity.
         eps_state  : perturbation size for the state Jacobian columns.
         eps_input  : perturbation size for the input Jacobian columns. Larger
                      than eps_state because dynamics are quadratic in omega, so
@@ -288,7 +302,7 @@ class QuadcopterPlant:
         if state_trim is None:
             state_trim = np.zeros(12)
         if omega_trim is None:
-            omega_trim = np.full(4, self.omega_hover)
+            omega_trim = np.full(4, self.hover_motor_speed)
         state_trim = np.asarray(state_trim, dtype=float)
         omega_trim = np.asarray(omega_trim, dtype=float)
 
@@ -336,7 +350,7 @@ class ControlAllocator:
     def __init__(self, plant: QuadcopterPlant):
         self.plant = plant
         d = plant.L / np.sqrt(2.0)
-        kf, km = plant.k_f, plant.k_m
+        kf, km = plant.thrust_coeff, plant.drag_torque_coeff
         sd = plant.spin_dir
 
         # Mixing matrix M maps [w0^2..w3^2] -> [thrust, tau_x, tau_y, tau_z].
@@ -360,7 +374,7 @@ class ControlAllocator:
         omega_sq = self.M_inv @ wrench
         omega_sq = np.clip(omega_sq, 0.0, None)        # no negative squared speed
         omegas = np.sqrt(omega_sq)
-        omegas = np.clip(omegas, 0.0, self.plant.max_omega)
+        omegas = np.clip(omegas, 0.0, self.plant.max_motor_speed)
         return omegas
 
 
@@ -495,7 +509,7 @@ class CascadedPIDController:
         # body z-axis so tilt doesn't sag altitude. T = m(g + az)/ (cos roll cos pitch)
         tilt_factor = max(np.cos(phi) * np.cos(theta), 0.5)
         thrust = self.plant.m * (self.plant.g + az_des) / tilt_factor
-        thrust = np.clip(thrust, 0.0, 4.0 * self.plant.k_f * self.plant.max_omega**2)
+        thrust = np.clip(thrust, 0.0, 4.0 * self.plant.thrust_coeff * self.plant.max_motor_speed**2)
 
         # Convert desired horizontal accelerations into desired tilt angles.
         # Rotate (ax, ay) into a yaw-aligned frame, then small-angle map to tilt.
@@ -549,7 +563,7 @@ class Simulation:
         # History buffers
         self.t_hist = []
         self.state_hist = []
-        self.omega_hist = []
+        self.motor_speed_hist = []
         self.setpoint_hist = []
 
     def run(self, duration, setpoint_fn, x0=None):
@@ -573,7 +587,7 @@ class Simulation:
             # Log BEFORE stepping so state/command/time line up.
             self.t_hist.append(t)
             self.state_hist.append(state.copy())
-            self.omega_hist.append(omegas.copy())
+            self.motor_speed_hist.append(omegas.copy())
             self.setpoint_hist.append([sp['x'], sp['y'], sp['z']])
 
             # Advance the plant.
@@ -582,7 +596,7 @@ class Simulation:
         # Convert to arrays for convenience.
         self.t_hist = np.array(self.t_hist)
         self.state_hist = np.array(self.state_hist)
-        self.omega_hist = np.array(self.omega_hist)
+        self.motor_speed_hist = np.array(self.motor_speed_hist)
         self.setpoint_hist = np.array(self.setpoint_hist)
 
     # ----------------------------------------------------------------------
@@ -593,7 +607,7 @@ class Simulation:
         t = self.t_hist
         S = self.state_hist
         sp = self.setpoint_hist
-        rpm = self.omega_hist * 60.0 / (2.0 * np.pi)   # rad/s -> rpm
+        rpm = self.motor_speed_hist * 60.0 / (2.0 * np.pi)   # rad/s -> rpm
 
         fig = plt.figure(figsize=(15, 9))
         gs = gridspec.GridSpec(2, 2, figure=fig, height_ratios=[1.2, 1.0],
@@ -704,7 +718,7 @@ def main():
     print(f"Final position:  x={final[0]:+.3f}  y={final[1]:+.3f}  z={final[2]:+.3f} [m]")
     print(f"Final attitude:  roll={np.degrees(final[6]):+.2f}  "
           f"pitch={np.degrees(final[7]):+.2f}  yaw={np.degrees(final[8]):+.2f} [deg]")
-    max_rpm = (sim.omega_hist * 60.0 / (2*np.pi)).max()
+    max_rpm = (sim.motor_speed_hist * 60.0 / (2*np.pi)).max()
     print(f"Peak motor speed: {max_rpm:.0f} rpm "
           f"({'SATURATED' if max_rpm >= plant.max_rpm else 'within limits'})")
 
